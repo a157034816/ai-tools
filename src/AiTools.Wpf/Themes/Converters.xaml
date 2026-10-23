@@ -1,0 +1,12 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:AiTools.Wpf.Mvvm">
+
+    <!-- 转换器 -->
+    <local:BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    <local:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVisibility" />
+    <local:StringToVisibilityConverter x:Key="StringToVisibility" />
+    <local:InverseBooleanConverter x:Key="InverseBool" />
+    <local:NullToVisibilityConverter x:Key="NullToVisibility" />
+
+</ResourceDictionary>

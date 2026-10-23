@@ -1,0 +1,594 @@
+<Window x:Class="AiTools.Samples.McpAgentManager.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:AiTools.Samples.McpAgentManager"
+        xmlns:vm="clr-namespace:AiTools.Samples.McpAgentManager.ViewModels"
+        Title="MCP 智能体管理器"
+        Width="1240" Height="820" MinWidth="960" MinHeight="700"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BackgroundBrush}"
+        FontFamily="{StaticResource UiFont}"
+        Foreground="{StaticResource TextBrush}"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True">
+
+    <Window.Resources>
+        <Style x:Key="PresetActionButton" TargetType="Button" BasedOn="{StaticResource SecondaryButton}">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Padding" Value="12,5" />
+            <Setter Property="MinWidth" Value="60" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsInstalled}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="LogResultText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSuccess}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSuccess}" Value="False">
+                    <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSkipped}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="LogMessageText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSuccess}" Value="False">
+                    <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSkipped}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18,16,18,12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="132" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶栏 -->
+        <Border Grid.Row="0" Style="{StaticResource Panel}" Padding="18,13" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="MCP 智能体管理器" FontSize="20" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                        <Border Margin="12,0,0,0" Padding="9,3" CornerRadius="10"
+                                Background="{StaticResource SurfaceAltBrush}" VerticalAlignment="Center">
+                            <TextBlock Text="本地配置 · 自动备份" FontSize="11"
+                                       Foreground="{StaticResource TextSecondaryBrush}" />
+                        </Border>
+                    </StackPanel>
+                    <TextBlock Text="为 Claude Code、Codex、Gemini CLI 等 AI 编码智能体安装与管理预设 MCP 服务器"
+                               Style="{StaticResource Hint}" Margin="0,5,0,0" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <TextBlock Text="{Binding AgentsSummary}" FontSize="12"
+                               Foreground="{StaticResource TextSecondaryBrush}" HorizontalAlignment="Right" />
+                    <TextBlock Text="所有写入操作都会在修改前创建备份" Style="{StaticResource Hint}"
+                               Margin="0,4,0,0" HorizontalAlignment="Right" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 主体 -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360" MinWidth="320" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" MinWidth="420" />
+            </Grid.ColumnDefinitions>
+
+            <!-- 左：智能体列表 -->
+            <Border Grid.Column="0" Style="{StaticResource Panel}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="16,14,16,10">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="智能体" Style="{StaticResource SectionTitle}" FontSize="16" Margin="0" />
+                            <Border Margin="8,1,0,0" Padding="7,2" CornerRadius="9"
+                                    Background="{StaticResource SurfaceAltBrush}" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding AgentCountText}" FontSize="11"
+                                           Foreground="{StaticResource TextSecondaryBrush}" />
+                            </Border>
+                        </StackPanel>
+                        <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center"
+                                   Text="点击选择" Style="{StaticResource Hint}" />
+                    </Grid>
+
+                    <ListBox Grid.Row="1" ItemsSource="{Binding Agents}"
+                             SelectedItem="{Binding SelectedAgent, Mode=TwoWay}"
+                             Background="Transparent" BorderThickness="0"
+                             ItemContainerStyle="{StaticResource AgentListItem}"
+                             Padding="12,0,8,12"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type vm:AgentItemViewModel}">
+                                <StackPanel>
+                                    <DockPanel LastChildFill="False">
+                                        <TextBlock DockPanel.Dock="Left" Text="{Binding DisplayName}"
+                                                   Style="{StaticResource CardTitle}" VerticalAlignment="Center" />
+                                        <Border DockPanel.Dock="Right" Style="{StaticResource MiniBadge}"
+                                                Background="{StaticResource SurfaceAltBrush}">
+                                            <TextBlock Text="{Binding CliBadgeText}" Style="{StaticResource BadgeText}"
+                                                       Foreground="{Binding CliInstalled, Converter={StaticResource BooleanToBrush}, ConverterParameter={StaticResource SuccessBrush}}" />
+                                        </Border>
+                                    </DockPanel>
+
+                                    <DockPanel Margin="0,4,0,0" LastChildFill="False">
+                                        <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" FontSize="11"
+                                                   Foreground="{Binding ConfigExists, Converter={StaticResource BooleanToBrush}, ConverterParameter={StaticResource AccentBrush}}" />
+                                        <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" FontSize="10"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   Text="{Binding Kind, Converter={StaticResource AgentKindLabel}}" />
+                                    </DockPanel>
+
+                                    <Grid Margin="0,7,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding ConfigPath}" FontSize="10.5"
+                                                   FontFamily="{StaticResource MonoFont}"
+                                                   Foreground="{StaticResource TextMutedBrush}"
+                                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                                   ToolTip="{Binding ConfigPath}" />
+                                        <Button Grid.Column="1" Content="配置路径…" Style="{StaticResource GhostButton}"
+                                                FontSize="10.5" Padding="7,3" Margin="6,0,0,0"
+                                                ToolTip="覆盖自动探测到的配置文件路径"
+                                                Command="{Binding DataContext.BeginPathEditCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                CommandParameter="{Binding}" />
+                                    </Grid>
+
+                                    <TextBlock Text="{Binding ErrorText}" Style="{StaticResource Hint}"
+                                               Foreground="{StaticResource DangerBrush}" Margin="0,5,0,0"
+                                               Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+
+                                    <StackPanel Margin="0,7,0,0"
+                                                Visibility="{Binding IsEditingPath, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Text="配置文件路径" Style="{StaticResource FieldLabel}" />
+                                        <TextBox Style="{StaticResource TextField}" FontSize="11"
+                                                 FontFamily="{StaticResource MonoFont}"
+                                                 Text="{Binding PathEditor, UpdateSourceTrigger=PropertyChanged}" />
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
+                                            <Button Content="取消" Style="{StaticResource GhostButton}" FontSize="11"
+                                                    Padding="10,4"
+                                                    Command="{Binding DataContext.CancelPathCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Content="保存" Style="{StaticResource PrimaryButton}" FontSize="11"
+                                                    Padding="12,4" Margin="6,0,0,0"
+                                                    Command="{Binding DataContext.SavePathCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                    CommandParameter="{Binding}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+
+            <!-- 右：预设管理或导出 -->
+            <Grid Grid.Column="2">
+                <!-- 常规预设管理 -->
+                <Grid Visibility="{Binding ShowPresetManager, Converter={StaticResource BoolToVisibility}}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="158" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 工具栏 -->
+                    <Border Grid.Row="0" Style="{StaticResource Panel}" Padding="14,11">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="MCP 预设" Style="{StaticResource SectionTitle}" FontSize="16" Margin="0" />
+                                <Border Margin="8,1,0,0" Padding="7,2" CornerRadius="9"
+                                        Background="{StaticResource SurfaceAltBrush}" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding PresetCountText}" FontSize="11"
+                                               Foreground="{StaticResource TextSecondaryBrush}" />
+                                </Border>
+                                <TextBlock Text="{Binding SelectedAgent.DisplayName, StringFormat=目标：{0}}"
+                                           Style="{StaticResource Hint}" Margin="12,2,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Content="全部添加" Style="{StaticResource PrimaryButton}" FontSize="12"
+                                        Padding="12,6" MinWidth="78"
+                                        IsEnabled="{Binding CanModifyCurrentAgent}"
+                                        Command="{Binding AddAllCommand}"
+                                        ToolTip="添加所有无需用户输入的预设；需要环境变量的预设会被跳过" />
+                                <Button Content="全部移除" Style="{StaticResource DangerButton}" FontSize="12"
+                                        Padding="12,6" Margin="6,0,0,0"
+                                        IsEnabled="{Binding CanModifyCurrentAgent}"
+                                        Command="{Binding RemoveAllCommand}"
+                                        ToolTip="从当前智能体移除所有目录内的预设 MCP" />
+                                <Button Content="导出 JSON" Style="{StaticResource SecondaryButton}" FontSize="12"
+                                        Padding="12,6" Margin="12,0,0,0"
+                                        Click="OnExportClick"
+                                        ToolTip="保存到文件并复制到剪贴板" />
+                                <Button Content="打开配置文件" Style="{StaticResource SecondaryButton}" FontSize="12"
+                                        Padding="12,6" Margin="6,0,0,0"
+                                        IsEnabled="{Binding CanOpenConfigFile}"
+                                        Command="{Binding OpenConfigCommand}" />
+                                <Button Content="刷新" Style="{StaticResource GhostButton}" FontSize="12"
+                                        Padding="10,6" Margin="6,0,0,0"
+                                        IsEnabled="{Binding IsNotBusy}"
+                                        Command="{Binding RefreshCommand}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- 预设网格 -->
+                    <Border Grid.Row="1" Style="{StaticResource Panel}" Margin="0,10,0,0">
+                        <ListBox x:Name="PresetList" ItemsSource="{Binding Presets}"
+                                 SelectedItem="{Binding SelectedPreset, Mode=TwoWay}"
+                                 Background="Transparent" BorderThickness="0"
+                                 ItemContainerStyle="{StaticResource PresetListItem}"
+                                 Padding="12,12,2,2"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:PresetItemViewModel}">
+                                    <StackPanel>
+                                        <DockPanel LastChildFill="False">
+                                            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                                                <TextBlock Text="{Binding DisplayName}" Style="{StaticResource CardTitle}"
+                                                           VerticalAlignment="Center" />
+                                                <Border Margin="8,0,0,0" Style="{StaticResource MiniBadge}"
+                                                        Background="{StaticResource SurfaceAltBrush}">
+                                                    <TextBlock Text="{Binding TransportText}" FontSize="10"
+                                                               FontFamily="{StaticResource MonoFont}"
+                                                               Foreground="{Binding IsStdio, Converter={StaticResource BooleanToBrush}, ConverterParameter={StaticResource AccentBrush}}" />
+                                                </Border>
+                                                <Border Margin="6,0,0,0" Style="{StaticResource MiniBadge}"
+                                                        Background="{StaticResource AccentSubtleBrush}"
+                                                        Visibility="{Binding IsInstalled, Converter={StaticResource BoolToVisibility}}">
+                                                    <TextBlock Text="已安装" FontSize="10"
+                                                               Foreground="{StaticResource SuccessBrush}" />
+                                                </Border>
+                                            </StackPanel>
+                                            <Button DockPanel.Dock="Right" Style="{StaticResource PresetActionButton}"
+                                                    Content="{Binding ActionText}"
+                                                    ToolTip="{Binding ActionTooltip}"
+                                                    IsEnabled="{Binding DataContext.CanModifyCurrentAgent, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                    Command="{Binding DataContext.TogglePresetCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                    CommandParameter="{Binding}" />
+                                        </DockPanel>
+
+                                        <TextBlock Text="{Binding Description}" Style="{StaticResource Caption}"
+                                                   Margin="0,6,0,0" MaxHeight="34" TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding ShowCardDescription, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <TextBlock Text="⚠ 需要填写环境变量" FontSize="10.5"
+                                                   Foreground="{StaticResource WarningBrush}" Margin="0,6,0,0"
+                                                   Visibility="{Binding ShowInputHint, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <!-- 内联环境变量编辑器 -->
+                                        <StackPanel Margin="0,6,0,0"
+                                                    Visibility="{Binding ShowInstallEditor, Converter={StaticResource BoolToVisibility}}">
+                                            <Border Style="{StaticResource Divider}" Margin="0,0,0,6" />
+                                            <TextBlock Text="安装前请填写以下环境变量" Style="{StaticResource FieldLabel}" Margin="0,0,0,4" />
+                                            <ItemsControl ItemsSource="{Binding RequiredVariables}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type vm:EnvironmentVariableViewModel}">
+                                                        <StackPanel Margin="0,0,0,6">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="{Binding Key}"
+                                                                           FontFamily="{StaticResource MonoFont}" FontSize="11"
+                                                                           Foreground="{StaticResource TextBrush}" />
+                                                                <TextBlock Text="{Binding Description}"
+                                                                           FontSize="10" Margin="8,1,0,0"
+                                                                           Foreground="{StaticResource TextMutedBrush}"
+                                                                           TextTrimming="CharacterEllipsis" MaxWidth="210" />
+                                                            </StackPanel>
+                                                            <Grid Margin="0,3,0,0">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <Grid Grid.Column="0">
+                                                                    <TextBox Style="{StaticResource TextField}" FontSize="12"
+                                                                             Padding="8,5"
+                                                                             Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                                                                             Visibility="{Binding IsRevealed, Converter={StaticResource BoolToVisibility}}" />
+                                                                    <PasswordBox Style="{StaticResource PasswordField}" FontSize="12"
+                                                                                 Padding="8,5"
+                                                                                 local:PasswordBoxAssist.BoundPassword="{Binding Value, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                                 Visibility="{Binding IsMasked, Converter={StaticResource BoolToVisibility}}" />
+                                                                </Grid>
+                                                                <Button Grid.Column="1" Content="{Binding RevealButtonText}"
+                                                                        Style="{StaticResource GhostButton}" FontSize="10.5"
+                                                                        Padding="8,3" Margin="6,0,0,0"
+                                                                        Command="{Binding ToggleRevealCommand}" />
+                                                            </Grid>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,2,0,0">
+                                                <Button Content="取消" Style="{StaticResource GhostButton}" FontSize="11"
+                                                        Padding="10,4"
+                                                        Command="{Binding DataContext.CancelEditorCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Content="确认安装" Style="{StaticResource PrimaryButton}" FontSize="11"
+                                                        Padding="12,5" Margin="6,0,0,0"
+                                                        Command="{Binding DataContext.ConfirmInstallCommand, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+
+                    <!-- 详情 + 导出预览 -->
+                    <Grid Grid.Row="2" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1*" />
+                            <ColumnDefinition Width="10" />
+                            <ColumnDefinition Width="1.2*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource Panel}" Padding="14,12">
+                            <Grid>
+                                <StackPanel Visibility="{Binding ShowPresetDetails, Converter={StaticResource BoolToVisibility}}">
+                                    <DockPanel LastChildFill="False">
+                                        <TextBlock DockPanel.Dock="Left" Text="{Binding SelectedPreset.DisplayName}"
+                                                   Style="{StaticResource CardTitle}" FontSize="15" />
+                                        <Border DockPanel.Dock="Right" Style="{StaticResource MiniBadge}"
+                                                Background="{StaticResource SurfaceAltBrush}">
+                                            <TextBlock Text="{Binding SelectedPreset.TransportText}" FontSize="10"
+                                                       FontFamily="{StaticResource MonoFont}"
+                                                       Foreground="{StaticResource AccentBrush}" />
+                                        </Border>
+                                    </DockPanel>
+                                    <TextBlock Text="{Binding SelectedPreset.Description}" Style="{StaticResource Caption}"
+                                               Margin="0,5,0,0" MaxHeight="36" TextTrimming="CharacterEllipsis" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
+                                        <TextBlock Text="{Binding SelectedPreset.TargetLabel}" Style="{StaticResource Hint}"
+                                                   VerticalAlignment="Top" />
+                                        <TextBlock Text="{Binding SelectedPreset.TargetText}" Margin="8,0,0,0"
+                                                   FontFamily="{StaticResource MonoFont}" FontSize="10.5"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   TextWrapping="Wrap" MaxWidth="330" />
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding SelectedPreset.RequiredEnvironmentSummary}" FontSize="10.5"
+                                               Foreground="{StaticResource TextMutedBrush}" Margin="0,7,0,0"
+                                               TextWrapping="Wrap" MaxHeight="40"
+                                               Visibility="{Binding SelectedPreset.HasRequiredEnvironment, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+
+                                <TextBlock Text="选择一个预设查看命令、URL 与环境变量要求；无选中时导出全部预设。"
+                                           Style="{StaticResource Hint}" VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding ShowPresetDetails, Converter={StaticResource InverseBoolToVisibility}}" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Column="2" Style="{StaticResource Panel}" Padding="14,12">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="导出 JSON" Style="{StaticResource CardTitle}" FontSize="15" />
+                                        <TextBlock Text="导出并复制" Style="{StaticResource Hint}" Margin="8,3,0,0" />
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding ExportScopeText}" Style="{StaticResource Hint}"
+                                               HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                </Grid>
+
+                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,6,0,7">
+                                    <Button Content="导出文件…" Style="{StaticResource SecondaryButton}" FontSize="11"
+                                            Padding="10,4" Click="OnExportClick" />
+                                    <Button Content="复制" Style="{StaticResource GhostButton}" FontSize="11"
+                                            Padding="10,4" Margin="6,0,0,0" Click="OnCopyJsonClick" />
+                                </StackPanel>
+
+                                <TextBox Grid.Row="2" Style="{StaticResource MultilineField}"
+                                         Text="{Binding ExportPreview, Mode=OneWay}"
+                                         IsReadOnly="True" FontFamily="{StaticResource MonoFont}" FontSize="11"
+                                         Padding="8,6" TextWrapping="NoWrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         HorizontalScrollBarVisibility="Auto" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Grid>
+
+                <!-- 仅导出面板（不支持的智能体 / OpenClaw 无配置） -->
+                <Border Style="{StaticResource Panel}" Padding="20"
+                        Visibility="{Binding ShowExportOnly, Converter={StaticResource BoolToVisibility}}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="仅支持导出 JSON" Style="{StaticResource SectionTitle}" FontSize="16" Margin="0" />
+                                <Border Margin="10,1,0,0" Padding="8,2" CornerRadius="9"
+                                        Background="{StaticResource AccentSubtleBrush}">
+                                    <TextBlock Text="{Binding SelectedAgent.DisplayName}" FontSize="11"
+                                               Foreground="{StaticResource WarningBrush}" />
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Margin="0,8,0,0" Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                       Text="该智能体没有可自动写入的配置文件格式。可以复制或导出下方的通用 mcpServers JSON，然后手动粘贴到它的 MCP 配置中。" />
+                        </StackPanel>
+
+                        <DockPanel Grid.Row="1" Margin="0,12,0,10">
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                                <Button Content="导出 JSON" Style="{StaticResource PrimaryButton}" FontSize="12"
+                                        Padding="12,6" Click="OnExportClick" />
+                                <Button Content="复制到剪贴板" Style="{StaticResource SecondaryButton}" FontSize="12"
+                                        Padding="12,6" Margin="8,0,0,0" Click="OnCopyJsonClick" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding ExportScopeText}" Style="{StaticResource Hint}"
+                                       HorizontalAlignment="Right" VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <TextBox Grid.Row="2" Style="{StaticResource MultilineField}"
+                                 Text="{Binding ExportPreview, Mode=OneWay}"
+                                 IsReadOnly="True" FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                 Padding="10,8" TextWrapping="NoWrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Auto" />
+
+                        <TextBlock Grid.Row="3" Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                   Text="提示：导出的环境变量只包含预设内建值，请在目标智能体中自行补充令牌等敏感信息。" />
+                    </Grid>
+                </Border>
+
+                <TextBlock Text="请选择左侧的智能体" Style="{StaticResource Hint}" FontSize="13"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Visibility="{Binding HasSelectedAgent, Converter={StaticResource InverseBoolToVisibility}}" />
+            </Grid>
+        </Grid>
+
+        <!-- 活动日志 -->
+        <Border Grid.Row="2" Style="{StaticResource Panel}" Margin="0,10,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="14,9,12,6">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="活动日志" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="安装 / 移除 / 导出 · 最多保留 300 条" Style="{StaticResource Hint}"
+                                   Margin="10,2,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <CheckBox Style="{StaticResource ToggleField}" Content="自动滚动" FontSize="11"
+                                  IsChecked="{Binding IsLogAutoScroll}" VerticalAlignment="Center"
+                                  Margin="0,0,10,0" />
+                        <Button Content="清空" Style="{StaticResource GhostButton}" FontSize="11"
+                                Padding="8,3" Click="OnClearLogClick" />
+                    </StackPanel>
+                </Grid>
+
+                <Border Grid.Row="1" BorderBrush="{StaticResource BorderSubtleBrush}" BorderThickness="0,1,0,0">
+                    <ListBox x:Name="LogList" ItemsSource="{Binding ActivityLog}"
+                             Background="Transparent" BorderThickness="0"
+                             ItemContainerStyle="{StaticResource LogListItem}"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type vm:ActivityLogEntry}">
+                                <StackPanel Margin="14,4">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="62" />
+                                            <ColumnDefinition Width="56" />
+                                            <ColumnDefinition Width="138" />
+                                            <ColumnDefinition Width="150" />
+                                            <ColumnDefinition Width="46" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding TimeText}" FontSize="11"
+                                                   FontFamily="{StaticResource MonoFont}"
+                                                   Foreground="{StaticResource TextMutedBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Action}" FontSize="11"
+                                                   Foreground="{StaticResource AccentBrush}" />
+                                        <TextBlock Grid.Column="2" Text="{Binding AgentName}" FontSize="11"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="3" Text="{Binding PresetName}" FontSize="11"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="4" Text="{Binding ResultText}"
+                                                   Style="{StaticResource LogResultText}" />
+                                        <TextBlock Grid.Column="5" Text="{Binding Message}"
+                                                   Style="{StaticResource LogMessageText}" />
+                                    </Grid>
+                                    <TextBlock Text="{Binding BackupText}" FontSize="10"
+                                               FontFamily="{StaticResource MonoFont}"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Visibility="{Binding HasBackup, Converter={StaticResource BoolToVisibility}}" />
+                                    <TextBlock Text="{Binding FileText}" FontSize="10"
+                                               FontFamily="{StaticResource MonoFont}"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Visibility="{Binding HasFilePath, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- 状态栏 -->
+        <Grid Grid.Row="3" Margin="2,8,2,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                <TextBlock Text="{Binding AgentsSummary}" FontSize="11"
+                           Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="·" Margin="8,0" FontSize="11"
+                           Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding StatusMessage}" FontSize="11"
+                           Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" MaxWidth="560" />
+            </StackPanel>
+            <TextBlock Grid.Column="1" Text="{Binding LastOperationText}" FontSize="11"
+                       Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
+        </Grid>
+    </Grid>
+</Window>

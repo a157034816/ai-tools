@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>AiTools.Wpf.Demo</RootNamespace>
+    <AssemblyName>AiTools.Wpf.Demo</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AiTools.Wpf\AiTools.Wpf.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Skills\AiTools.Skills.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="skills\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

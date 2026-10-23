@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>AiTools.Samples.McpToolServer</RootNamespace>
+    <AssemblyName>AiTools.Samples.McpToolServer</AssemblyName>
+    <StartupObject>AiTools.Samples.McpToolServer.Program</StartupObject>
+    <IsPackable>false</IsPackable>
+    <Version>1.0.0</Version>
+    <Description>WPF demo MCP tool server (JSON-RPC 2.0 over streamable HTTP or stdio) built on HttpListener.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Mcp\AiTools.Mcp.csproj" />
+    <ProjectReference Include="..\AiTools.Samples.McpDiscovery\AiTools.Samples.McpDiscovery.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>AiTools.Samples.McpDiscovery</RootNamespace>
+    <AssemblyName>AiTools.Samples.McpDiscovery</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <Description>Local MCP server registry shared by the MCP tool server and the MCP explorer samples.</Description>
+  </PropertyGroup>
+
+</Project>

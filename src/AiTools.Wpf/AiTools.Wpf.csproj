@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>AiTools.Wpf</RootNamespace>
+    <AssemblyName>AiTools.Wpf</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Reusable WPF settings and chat pages for AiTools, registered through global configuration and interfaces.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\AiTools.Core\AiTools.Core.csproj" />
+    <ProjectReference Include="..\AiTools.OpenAI\AiTools.OpenAI.csproj" />
+    <ProjectReference Include="..\AiTools.Anthropic\AiTools.Anthropic.csproj" />
+    <ProjectReference Include="..\AiTools.Gemini\AiTools.Gemini.csproj" />
+    <ProjectReference Include="..\AiTools.Skills\AiTools.Skills.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

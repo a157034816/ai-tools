@@ -1,0 +1,622 @@
+<Window x:Class="AiTools.Samples.McpExplorer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:AiTools.Samples.McpExplorer"
+        xmlns:vm="clr-namespace:AiTools.Samples.McpExplorer.ViewModels"
+        mc:Ignorable="d"
+        Title="AiTools · MCP Explorer"
+        Width="1280" Height="820" MinWidth="960" MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BackgroundBrush}"
+        Foreground="{StaticResource TextBrush}"
+        FontFamily="{StaticResource UiFont}"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
+
+    <Window.Resources>
+        <Style x:Key="InfoValue" TargetType="TextBlock" BasedOn="{StaticResource Caption}">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="Margin" Value="0,0,0,5" />
+        </Style>
+        <Style x:Key="InfoLabel" TargetType="TextBlock" BasedOn="{StaticResource Hint}">
+            <Setter Property="Margin" Value="0,0,0,1" />
+        </Style>
+        <Style x:Key="ListSectionHeader" TargetType="TextBlock" BasedOn="{StaticResource SectionTitle}">
+            <Setter Property="FontSize" Value="14" />
+        </Style>
+        <Style x:Key="StatusLabel" TargetType="TextBlock" BasedOn="{StaticResource Caption}">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="11.5" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶部标题栏 -->
+        <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderSubtleBrush}"
+                BorderThickness="0,0,0,1" Padding="18,12">
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="MCP Explorer" FontSize="17" FontWeight="SemiBold" />
+                    <Border Style="{StaticResource Badge}" Background="{StaticResource AccentSubtleBrush}" Margin="10,0,0,0">
+                        <TextBlock Text="本地服务器嗅探与调试" Style="{StaticResource BadgeText}"
+                                   Foreground="{StaticResource AccentBrush}" />
+                    </Border>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Ellipse Width="8" Height="8" Margin="0,0,6,0" VerticalAlignment="Center"
+                             Fill="{Binding ConnectionStatusBrush}" />
+                    <TextBlock Text="{Binding ConnectionStatus}" FontSize="12.5" VerticalAlignment="Center"
+                               Foreground="{StaticResource TextSecondaryBrush}" />
+                    <TextBlock Text="{Binding ConnectionDetail}" FontSize="11.5" Margin="10,0,0,0"
+                               VerticalAlignment="Center" Foreground="{StaticResource TextMutedBrush}"
+                               TextTrimming="CharacterEllipsis" MaxWidth="520" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 主体三栏 -->
+        <Grid Grid.Row="1" Margin="14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300" MinWidth="260" />
+                <ColumnDefinition Width="8" />
+                <ColumnDefinition Width="300" MinWidth="240" />
+                <ColumnDefinition Width="8" />
+                <ColumnDefinition Width="*" MinWidth="420" />
+            </Grid.ColumnDefinitions>
+
+            <!-- 左栏：本机 MCP 服务 -->
+            <Border Grid.Column="0" Style="{StaticResource Card}" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,10">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="本机 MCP 服务" Style="{StaticResource ListSectionHeader}" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="刷新" Command="{Binding RefreshCommand}" Style="{StaticResource GhostButton}"
+                                    FontSize="12" Padding="8,4" ToolTip="重新扫描注册表并清理失效项" />
+                        </StackPanel>
+                    </Grid>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                        <CheckBox Content="每 3 秒自动刷新" IsChecked="{Binding AutoRefresh, Mode=TwoWay}"
+                                  FontSize="11.5" />
+                        <TextBlock Text="{Binding ServerCountText}" Style="{StaticResource Hint}"
+                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </StackPanel>
+
+                    <Grid Grid.Row="2">
+                        <ListBox ItemsSource="{Binding Servers}" SelectedItem="{Binding SelectedServer, Mode=TwoWay}"
+                                 Style="{StaticResource ServerListBox}" ItemContainerStyle="{StaticResource ServerListItem}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate DataType="{x:Type local:ServerItemViewModel}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold"
+                                                       FontSize="13" TextTrimming="CharacterEllipsis" />
+                                            <Border Grid.Column="1" Style="{StaticResource Badge}" Margin="6,0,0,0"
+                                                    BorderThickness="0">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Ellipse Width="6" Height="6" Fill="{Binding LivenessBrush}"
+                                                             VerticalAlignment="Center" Margin="0,0,4,0" />
+                                                    <TextBlock Text="{Binding LivenessText}" Style="{StaticResource BadgeText}"
+                                                               Foreground="{Binding LivenessBrush}" />
+                                                </StackPanel>
+                                            </Border>
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <TextBlock Text="{Binding VersionText}" Style="{StaticResource Hint}"
+                                                       Margin="0,0,8,0" />
+                                            <Border Background="{StaticResource AccentSubtleBrush}" CornerRadius="3"
+                                                    Padding="5,1" Margin="0,0,8,0">
+                                                <TextBlock Text="{Binding TransportLabel}" FontSize="10"
+                                                           Foreground="{StaticResource AccentBrush}" />
+                                            </Border>
+                                            <TextBlock Text="{Binding ToolCountText}" Style="{StaticResource Hint}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <Border Background="Transparent" Padding="6,20" IsHitTestVisible="False"
+                                Visibility="{Binding Servers.Count, Converter={StaticResource ZeroToVisibility}}">
+                            <StackPanel>
+                                <TextBlock Text="未发现 MCP 服务器" Style="{StaticResource Caption}"
+                                           HorizontalAlignment="Center" Margin="0,0,0,8" />
+                                <TextBlock Style="{StaticResource Hint}" TextAlignment="Center"
+                                           Text="先启动示例服务：&#10;dotnet run --project samples/AiTools.Samples.McpToolServer&#10;&#10;服务启动后会自动写入本地注册表，点击“刷新”即可看到。" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Row="3" Style="{StaticResource Divider}" />
+
+                    <Border Grid.Row="4" Background="{StaticResource BackgroundBrush}" CornerRadius="6" Padding="10,8"
+                            Margin="0,0,0,10" MinHeight="150">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <TextBlock Text="服务器详情" Style="{StaticResource FieldLabel}" FontWeight="SemiBold"
+                                           Margin="0,0,0,6" />
+                                <StackPanel Visibility="{Binding HasSelectedServer, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock Text="端点" Style="{StaticResource InfoLabel}" />
+                                    <TextBlock Text="{Binding SelectedServer.EndpointText}" Style="{StaticResource InfoValue}"
+                                               FontFamily="{StaticResource MonoFont}" FontSize="11" />
+                                    <TextBlock Text="PID" Style="{StaticResource InfoLabel}" />
+                                    <TextBlock Text="{Binding SelectedServer.PidText}" Style="{StaticResource InfoValue}"
+                                               FontFamily="{StaticResource MonoFont}" FontSize="11" />
+                                    <TextBlock Text="启动命令" Style="{StaticResource InfoLabel}" />
+                                    <TextBlock Text="{Binding SelectedServer.LaunchCommandText}" Style="{StaticResource InfoValue}"
+                                               FontFamily="{StaticResource MonoFont}" FontSize="11" />
+                                    <TextBlock Text="工作目录" Style="{StaticResource InfoLabel}" />
+                                    <TextBlock Text="{Binding SelectedServer.WorkingDirectoryText}" Style="{StaticResource InfoValue}"
+                                               FontFamily="{StaticResource MonoFont}" FontSize="11" />
+                                    <TextBlock Text="注册时间" Style="{StaticResource InfoLabel}" />
+                                    <TextBlock Text="{Binding SelectedServer.RegisteredAtText}" Style="{StaticResource InfoValue}" FontSize="11.5" />
+                                    <TextBlock Text="启动时上报的工具" Style="{StaticResource InfoLabel}" />
+                                    <TextBlock Text="{Binding SelectedServer.ToolNamesText}" Style="{StaticResource InfoValue}" FontSize="11.5" />
+                                </StackPanel>
+                                <TextBlock Text="选择一个服务器查看详情。" Style="{StaticResource Hint}"
+                                           Visibility="{Binding HasSelectedServer, Converter={StaticResource InverseBoolToVisibility}}" />
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+
+                    <Button Grid.Row="5" Content="{Binding ConnectButtonText}"
+                            Command="{Binding ConnectOrDisconnectCommand}" Style="{StaticResource PrimaryButton}"
+                            HorizontalAlignment="Stretch" />
+                </Grid>
+            </Border>
+
+            <!-- 中栏：工具目录 -->
+            <Border Grid.Column="2" Style="{StaticResource Card}" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <TextBlock Text="工具目录" Style="{StaticResource ListSectionHeader}" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource Badge}" HorizontalAlignment="Right" Background="{StaticResource BackgroundBrush}">
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="6" Height="6" Fill="{Binding ConnectionStatusBrush}"
+                                         VerticalAlignment="Center" Margin="0,0,5,0" />
+                                <TextBlock Text="{Binding ConnectionStatus}" Style="{StaticResource BadgeText}" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Row="1" Background="{StaticResource BackgroundBrush}" CornerRadius="6"
+                            Padding="10,8" Margin="0,0,0,8"
+                            Visibility="{Binding ServerInfoVisible, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Text="{Binding ServerInfo}" FontWeight="SemiBold" FontSize="12.5"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding ServerInfoDetail}" Style="{StaticResource Hint}"
+                                       Margin="0,3,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Grid Grid.Row="2">
+                        <ListBox ItemsSource="{Binding Tools}" SelectedItem="{Binding SelectedTool, Mode=TwoWay}"
+                                 Style="{StaticResource ToolListBox}" ItemContainerStyle="{StaticResource ToolListItem}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate DataType="{x:Type local:ToolItemViewModel}">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Name}" FontFamily="{StaticResource MonoFont}"
+                                                   FontSize="12.5" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Description}" Style="{StaticResource Hint}"
+                                                   Margin="0,3,0,0" MaxHeight="34" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding ParametersSummary}" Style="{StaticResource Hint}"
+                                                   Margin="0,3,0,0" Foreground="{StaticResource TextMutedBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <TextBlock Text="{Binding ToolsEmptyText}" Style="{StaticResource Hint}" TextAlignment="Center"
+                                   VerticalAlignment="Center" Margin="12,40" TextWrapping="Wrap" />
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <!-- 右栏：调用面板 -->
+            <Border Grid.Column="4" Style="{StaticResource Card}" Padding="0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- 工具调用 -->
+                        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="16,14,10,10">
+                            <StackPanel>
+                                <Grid>
+                                    <StackPanel>
+                                        <TextBlock Text="调用工具" Style="{StaticResource ListSectionHeader}" />
+                                        <TextBlock Text="{Binding ActiveTool.Name, TargetNullValue='尚未选择工具'}"
+                                                   FontFamily="{StaticResource MonoFont}" FontSize="16"
+                                                   FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"
+                                                   Margin="0,6,0,0" />
+                                        <TextBlock Text="{Binding ActiveToolDescription}" Style="{StaticResource Caption}"
+                                                   Margin="0,4,0,0" MaxWidth="640" HorizontalAlignment="Left" />
+                                    </StackPanel>
+                                    <StackPanel HorizontalAlignment="Right" VerticalAlignment="Top">
+                                        <Button Content="{Binding RawJsonToggleText}" Command="{Binding ToggleRawJsonCommand}"
+                                                Style="{StaticResource GhostButton}" FontSize="12" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Border Style="{StaticResource Divider}" Margin="0,10,0,10" />
+
+                                <!-- 空状态 -->
+                                <Border Background="{StaticResource BackgroundBrush}" CornerRadius="8" Padding="20"
+                                        Visibility="{Binding HasActiveTool, Converter={StaticResource InverseBoolToVisibility}}">
+                                    <StackPanel>
+                                        <TextBlock Text="连接服务器并选择一个工具" Style="{StaticResource Caption}"
+                                                   HorizontalAlignment="Center" />
+                                        <TextBlock Style="{StaticResource Hint}" TextAlignment="Center" Margin="0,6,0,0"
+                                                   Text="左侧连接 MCP 服务器后，工具目录会显示在这里。选中工具即可按参数结构生成表单并调用。" />
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- 表单模式 -->
+                                <StackPanel Visibility="{Binding HasActiveTool, Converter={StaticResource BoolToVisibility}}">
+                                    <ItemsControl ItemsSource="{Binding Parameters}"
+                                                  Visibility="{Binding IsFormMode, Converter={StaticResource BoolToVisibility}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type local:ToolParameterViewModel}">
+                                                <StackPanel Margin="0,0,0,10">
+                                                    <Grid>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding Label}" Style="{StaticResource FieldLabel}"
+                                                                       FontFamily="{StaticResource MonoFont}" Margin="0" />
+                                                            <TextBlock Text="{Binding TypeHint}" Style="{StaticResource Hint}"
+                                                                       Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                        </StackPanel>
+                                                    </Grid>
+
+                                                    <TextBox Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}"
+                                                             Style="{StaticResource TextField}"
+                                                             Visibility="{Binding IsText, Converter={StaticResource BoolToVisibility}}" />
+                                                    <TextBox Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}"
+                                                             Style="{StaticResource MultilineField}" MinHeight="54" MaxHeight="120"
+                                                             Visibility="{Binding IsMultiline, Converter={StaticResource BoolToVisibility}}" />
+                                                    <CheckBox Content="启用 / 为 true" IsChecked="{Binding BoolValue, Mode=TwoWay}"
+                                                              Visibility="{Binding IsBoolean, Converter={StaticResource BoolToVisibility}}" />
+                                                    <ComboBox ItemsSource="{Binding EnumValues}"
+                                                              SelectedItem="{Binding SelectedEnumValue, Mode=TwoWay}"
+                                                              Visibility="{Binding IsEnum, Converter={StaticResource BoolToVisibility}}" />
+
+                                                    <TextBlock Text="{Binding HintText}" Style="{StaticResource Hint}"
+                                                               Margin="0,4,0,0"
+                                                               Visibility="{Binding HintText, Converter={StaticResource StringToVisibility}}" />
+                                                    <TextBlock Text="{Binding ValidationError}" Foreground="{Binding ErrorBrush}"
+                                                               FontSize="11.5" Margin="0,3,0,0"
+                                                               Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <StackPanel Visibility="{Binding IsFormMode, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Style="{StaticResource Hint}" Text="该工具不需要参数，可直接调用。"
+                                                   Visibility="{Binding ActiveTool.HasParameters, Converter={StaticResource InverseBoolToVisibility}}" />
+                                    </StackPanel>
+
+                                    <!-- JSON 模式 -->
+                                    <TextBox Text="{Binding RawArgumentsJson, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource MultilineField}" MinHeight="150"
+                                             Visibility="{Binding IsRawJsonMode, Converter={StaticResource BoolToVisibility}}" />
+
+                                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                        <Button Content="{Binding InvokeButtonText}" Command="{Binding InvokeToolCommand}"
+                                                Style="{StaticResource PrimaryButton}" MinWidth="110" />
+                                        <TextBlock Text="调用中…" Style="{StaticResource Hint}" Margin="10,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   Visibility="{Binding IsInvoking, Converter={StaticResource BoolToVisibility}}" />
+                                        <TextBlock Text="Ctrl+Enter 调用" Style="{StaticResource Hint}" Margin="10,0,0,0"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <Border Style="{StaticResource Divider}" />
+
+                                <!-- 结果 -->
+                                <StackPanel Visibility="{Binding HasResult, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Border Style="{StaticResource Badge}" Background="{Binding ResultBadgeBrush}">
+                                            <TextBlock Text="{Binding ResultBadgeText}" Style="{StaticResource BadgeText}"
+                                                       Foreground="#FF0D1117" FontWeight="SemiBold" />
+                                        </Border>
+                                        <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource Caption}"
+                                                   Margin="10,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+
+                                    <TextBlock Text="{Binding ResultError}" Foreground="{StaticResource DangerBrush}"
+                                               FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"
+                                               Visibility="{Binding HasResultError, Converter={StaticResource BoolToVisibility}}" />
+
+                                    <ItemsControl ItemsSource="{Binding ResultBlocks}" Margin="0,8,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate DataType="{x:Type local:ResultBlockViewModel}">
+                                                <Border Background="{StaticResource BackgroundBrush}" CornerRadius="6"
+                                                        Padding="10,8" Margin="0,0,0,6">
+                                                    <StackPanel>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding TypeLabel}" FontSize="11"
+                                                                       FontWeight="SemiBold" Foreground="{Binding Accent}" />
+                                                            <TextBlock Text="{Binding Summary}" Style="{StaticResource Hint}"
+                                                                       Margin="8,0,0,0" VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis" MaxWidth="480" />
+                                                        </StackPanel>
+                                                        <TextBox Text="{Binding Text, Mode=OneWay}" Style="{StaticResource MessageText}"
+                                                                 FontFamily="{StaticResource MonoFont}" FontSize="12"
+                                                                 Margin="0,4,0,0" MaxHeight="260"
+                                                                 Visibility="{Binding HasText, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <Expander Header="原始 JSON" Margin="0,4,0,0"
+                                              Visibility="{Binding RawResultJson, Converter={StaticResource StringToVisibility}}">
+                                        <TextBox Text="{Binding RawResultJson, Mode=OneWay}" Style="{StaticResource MessageText}"
+                                                 FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                                 Background="{StaticResource BackgroundBrush}" Padding="10" MaxHeight="260" />
+                                    </Expander>
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- 下半部分：资源 / 提示词 / 日志 -->
+                        <Border Grid.Row="1" BorderBrush="{StaticResource BorderSubtleBrush}" BorderThickness="0,1,0,0"
+                                Padding="16,8,16,12">
+                            <TabControl Style="{StaticResource TabControlStyle}" Height="270">
+                                <TabItem Header="资源" Style="{StaticResource TabItemStyle}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="220" />
+                                            <ColumnDefinition Width="8" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid Grid.Column="0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                                                <Button Content="刷新" Command="{Binding LoadResourcesCommand}"
+                                                        Style="{StaticResource GhostButton}" FontSize="11.5" Padding="8,3" />
+                                                <TextBlock Text="{Binding Resources.Count, StringFormat={}{0} 个}" Style="{StaticResource Hint}"
+                                                           VerticalAlignment="Center" Margin="8,0,0,0" />
+                                            </StackPanel>
+                                            <ListBox Grid.Row="1" ItemsSource="{Binding Resources}"
+                                                     SelectedItem="{Binding SelectedResource, Mode=TwoWay}"
+                                                     Style="{StaticResource ServerListBox}" ItemContainerStyle="{StaticResource ToolListItem}">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Text="{Binding Uri}" Style="{StaticResource Hint}"
+                                                                       FontFamily="{StaticResource MonoFont}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                            <StackPanel Grid.Row="2" Margin="0,6,0,0">
+                                                <TextBox Text="{Binding ReadResourceUri, UpdateSourceTrigger=PropertyChanged}"
+                                                         Style="{StaticResource TextField}" FontSize="11" Padding="6,4"
+                                                         ToolTip="资源 URI，例如 file:///..." />
+                                                <Button Content="读取资源" Command="{Binding ReadResourceCommand}"
+                                                        Style="{StaticResource SecondaryButton}" FontSize="11.5"
+                                                        Padding="8,4" Margin="0,6,0,0" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <Border Grid.Column="2" Background="{StaticResource BackgroundBrush}" CornerRadius="6"
+                                                Padding="10">
+                                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding ResourceDetailTitle}" FontFamily="{StaticResource MonoFont}"
+                                                               FontSize="11.5" Foreground="{StaticResource AccentBrush}"
+                                                               TextWrapping="Wrap" Margin="0,0,0,6"
+                                                               Visibility="{Binding ResourceDetailTitle, Converter={StaticResource StringToVisibility}}" />
+                                                    <TextBlock Text="{Binding ResourceDetail}" Style="{StaticResource Caption}"
+                                                               FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                                               TextWrapping="Wrap"
+                                                               Visibility="{Binding ResourceDetail, Converter={StaticResource StringToVisibility}}" />
+                                                    <TextBlock Text="选择资源并点击“读取资源”查看内容。" Style="{StaticResource Hint}"
+                                                               Visibility="{Binding ResourceDetail, Converter={StaticResource InverseStringToVisibility}}" />
+                                                </StackPanel>
+                                            </ScrollViewer>
+                                        </Border>
+                                    </Grid>
+                                </TabItem>
+
+                                <TabItem Header="提示词" Style="{StaticResource TabItemStyle}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="220" />
+                                            <ColumnDefinition Width="8" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid Grid.Column="0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+                                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                                                <Button Content="刷新" Command="{Binding LoadPromptsCommand}"
+                                                        Style="{StaticResource GhostButton}" FontSize="11.5" Padding="8,3" />
+                                                <TextBlock Text="{Binding Prompts.Count, StringFormat={}{0} 个}" Style="{StaticResource Hint}"
+                                                           VerticalAlignment="Center" Margin="8,0,0,0" />
+                                            </StackPanel>
+                                            <ListBox Grid.Row="1" ItemsSource="{Binding Prompts}"
+                                                     SelectedItem="{Binding SelectedPrompt, Mode=TwoWay}"
+                                                     Style="{StaticResource ServerListBox}" ItemContainerStyle="{StaticResource ToolListItem}">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold" />
+                                                            <TextBlock Text="{Binding Description}" Style="{StaticResource Hint}"
+                                                                       MaxHeight="32" TextTrimming="CharacterEllipsis" />
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </Grid>
+                                        <Grid Grid.Column="2">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+                                            <ItemsControl Grid.Row="0" ItemsSource="{Binding PromptArguments}" Margin="0,0,0,6">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type local:PromptArgumentViewModel}">
+                                                        <StackPanel Margin="0,0,0,6">
+                                                            <TextBlock Text="{Binding Label}" Style="{StaticResource FieldLabel}"
+                                                                       FontFamily="{StaticResource MonoFont}" Margin="0,0,0,3" />
+                                                            <TextBox Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                                                                     Style="{StaticResource TextField}" FontSize="11.5" Padding="6,4" />
+                                                            <TextBlock Text="{Binding Description}" Style="{StaticResource Hint}"
+                                                                       Visibility="{Binding HasDescription, Converter={StaticResource BoolToVisibility}}" />
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <Button Grid.Row="1" Content="获取提示词" Command="{Binding GetPromptCommand}"
+                                                    Style="{StaticResource SecondaryButton}" FontSize="11.5" Padding="8,4"
+                                                    HorizontalAlignment="Left" Margin="0,0,0,6" />
+                                            <Border Grid.Row="2" Background="{StaticResource BackgroundBrush}" CornerRadius="6" Padding="10">
+                                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding PromptResultTitle}" Style="{StaticResource Hint}"
+                                                                   Foreground="{StaticResource AccentBrush}" Margin="0,0,0,4" />
+                                                        <TextBlock Text="{Binding PromptResultText}" Style="{StaticResource Caption}"
+                                                                   FontFamily="{StaticResource MonoFont}" FontSize="11.5"
+                                                                   TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                </ScrollViewer>
+                                            </Border>
+                                        </Grid>
+                                    </Grid>
+                                </TabItem>
+
+                                <TabItem Header="活动日志" Style="{StaticResource TabItemStyle}">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                                            <TextBlock Text="最近 300 条操作" Style="{StaticResource Hint}" VerticalAlignment="Center" />
+                                            <Button Content="清空" Command="{Binding ClearLogCommand}" Style="{StaticResource GhostButton}"
+                                                    FontSize="11" Padding="8,2" Margin="10,0,0,0" />
+                                        </StackPanel>
+                                        <ListBox Grid.Row="1" ItemsSource="{Binding Logs}" Style="{StaticResource ServerListBox}"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                            <ListBox.ItemContainerStyle>
+                                                <Style TargetType="ListBoxItem">
+                                                    <Setter Property="Padding" Value="2,3" />
+                                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="ListBoxItem">
+                                                                <ContentPresenter />
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                            </ListBox.ItemContainerStyle>
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate DataType="{x:Type local:ActivityLogEntry}">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="58" />
+                                                            <ColumnDefinition Width="16" />
+                                                            <ColumnDefinition Width="130" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0" Text="{Binding TimestampText}"
+                                                                   Style="{StaticResource Hint}" FontFamily="{StaticResource MonoFont}" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding StatusGlyph}"
+                                                                   Foreground="{Binding StatusBrush}" FontWeight="Bold" />
+                                                        <TextBlock Grid.Column="2" Text="{Binding Operation}" FontSize="11.5"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="3" Text="{Binding Detail}" Style="{StaticResource Hint}"
+                                                                   TextWrapping="Wrap" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </Grid>
+                                </TabItem>
+                            </TabControl>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- 状态栏 -->
+        <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderSubtleBrush}"
+                BorderThickness="0,1,0,0" Padding="16,6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <TextBlock Text="注册表:" Style="{StaticResource StatusLabel}" Foreground="{StaticResource TextMutedBrush}" />
+                    <TextBlock Text="{Binding RegistryPath}" Style="{StaticResource StatusLabel}"
+                               FontFamily="{StaticResource MonoFont}" Margin="4,0,16,0" MaxWidth="460"
+                               TextTrimming="CharacterEllipsis" ToolTip="{Binding RegistryPath}" />
+                    <TextBlock Text="连接:" Style="{StaticResource StatusLabel}" Foreground="{StaticResource TextMutedBrush}" />
+                    <TextBlock Text="{Binding ConnectionStatus}" Style="{StaticResource StatusLabel}" Margin="4,0,0,0" />
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding StatusText}" Style="{StaticResource StatusLabel}"
+                           HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" Padding="16,0" />
+                <TextBlock Grid.Column="2" Text="AiTools MCP Explorer" Style="{StaticResource StatusLabel}"
+                           Foreground="{StaticResource TextMutedBrush}" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

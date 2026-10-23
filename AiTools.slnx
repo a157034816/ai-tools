@@ -1,0 +1,24 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/AiTools.Samples.Console/AiTools.Samples.Console.csproj" />
+    <Project Path="samples/AiTools.Samples.McpAgentManager/AiTools.Samples.McpAgentManager.csproj" />
+    <Project Path="samples/AiTools.Samples.McpAgents/AiTools.Samples.McpAgents.csproj" />
+    <Project Path="samples/AiTools.Samples.McpDiscovery/AiTools.Samples.McpDiscovery.csproj" />
+    <Project Path="samples/AiTools.Samples.McpExplorer/AiTools.Samples.McpExplorer.csproj" />
+    <Project Path="samples/AiTools.Samples.McpToolServer/AiTools.Samples.McpToolServer.csproj" />
+    <Project Path="samples/AiTools.Wpf.Demo/AiTools.Wpf.Demo.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/AiTools.Abstractions/AiTools.Abstractions.csproj" />
+    <Project Path="src/AiTools.Anthropic/AiTools.Anthropic.csproj" />
+    <Project Path="src/AiTools.Core/AiTools.Core.csproj" />
+    <Project Path="src/AiTools.Gemini/AiTools.Gemini.csproj" />
+    <Project Path="src/AiTools.Mcp/AiTools.Mcp.csproj" />
+    <Project Path="src/AiTools.OpenAI/AiTools.OpenAI.csproj" />
+    <Project Path="src/AiTools.Skills/AiTools.Skills.csproj" />
+    <Project Path="src/AiTools.Wpf/AiTools.Wpf.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AiTools.Tests/AiTools.Tests.csproj" />
+  </Folder>
+</Solution>

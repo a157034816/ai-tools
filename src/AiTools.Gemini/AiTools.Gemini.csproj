@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <RootNamespace>AiTools.Gemini</RootNamespace>
+    <AssemblyName>AiTools.Gemini</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Google Gemini provider for AiTools (generateContent, streaming, function calling, embeddings, images, audio).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\AiTools.Core\AiTools.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

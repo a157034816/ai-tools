@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>AiTools.Samples.McpExplorer</RootNamespace>
+    <AssemblyName>AiTools.Samples.McpExplorer</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <Description>WPF console for discovering, connecting to and exploring local MCP servers.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Mcp\AiTools.Mcp.csproj" />
+    <ProjectReference Include="..\AiTools.Samples.McpDiscovery\AiTools.Samples.McpDiscovery.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,437 @@
+<UserControl x:Class="AiTools.Wpf.Views.ChatPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:AiTools.Wpf.ViewModels">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/AiTools.Wpf;component/Themes/DarkTheme.xaml" />
+                <ResourceDictionary Source="/AiTools.Wpf;component/Themes/Converters.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- 消息气泡 -->
+            <Style x:Key="Chat_Bubble" TargetType="Border">
+                <Setter Property="Background" Value="{StaticResource AssistantBubbleBrush}" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Padding" Value="12,9" />
+                <Setter Property="MaxWidth" Value="780" />
+                <Setter Property="HorizontalAlignment" Value="Left" />
+            </Style>
+
+            <!-- 推理过程折叠区，避免默认浅色模板在深色背景上不可读 -->
+            <Style x:Key="Chat_ReasoningExpander" TargetType="Expander">
+                <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+                <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="IsExpanded" Value="False" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Expander">
+                            <StackPanel>
+                                <ToggleButton x:Name="Toggle" HorizontalAlignment="Left"
+                                              Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              Content="{TemplateBinding Header}"
+                                              IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <StackPanel Orientation="Horizontal" Background="Transparent">
+                                                <TextBlock x:Name="Arrow" Text="▸" FontSize="10"
+                                                           Foreground="{StaticResource TextMutedBrush}"
+                                                           VerticalAlignment="Center" Margin="0,0,4,0" />
+                                                <ContentPresenter VerticalAlignment="Center" />
+                                            </StackPanel>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Arrow" Property="Text" Value="▾" />
+                                                </Trigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Arrow" Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <Border x:Name="ExpandContent" Visibility="Collapsed" Margin="12,4,0,0"
+                                        Padding="8,6" CornerRadius="4"
+                                        Background="{StaticResource BackgroundBrush}">
+                                    <ContentPresenter />
+                                </Border>
+                            </StackPanel>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsExpanded" Value="True">
+                                    <Setter TargetName="ExpandContent" Property="Visibility" Value="Visible" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Grid Background="{StaticResource BackgroundBrush}"
+          TextElement.FontFamily="{StaticResource UiFont}"
+          TextElement.Foreground="{StaticResource TextBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶部工具栏 -->
+        <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderSubtleBrush}" BorderThickness="0,0,0,1"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <TextBlock Text="服务商" Style="{StaticResource Hint}" Margin="0,0,0,3" />
+                    <ComboBox Width="160" Style="{StaticResource ComboField}"
+                              ItemContainerStyle="{StaticResource ComboItem}"
+                              ItemsSource="{Binding Providers}"
+                              DisplayMemberPath="DisplayName"
+                              IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                              SelectedItem="{Binding SelectedProvider, Mode=TwoWay}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Margin="0,0,16,0">
+                    <TextBlock Text="模型" Style="{StaticResource Hint}" Margin="0,0,0,3" />
+                    <ComboBox Width="200" Style="{StaticResource ComboField}"
+                              ItemContainerStyle="{StaticResource ComboItem}"
+                              ItemsSource="{Binding SelectedProvider.Models}"
+                              DisplayMemberPath="DisplayName"
+                              IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBool}}"
+                              SelectedItem="{Binding SelectedModel, Mode=TwoWay}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" VerticalAlignment="Bottom" Margin="0,0,16,4">
+                <TextBlock Text="{Binding StatusMessage}" ToolTip="{Binding StatusMessage}" TextWrapping="NoWrap">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource Caption}">
+                            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding StatusKind}" Value="Success">
+                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding StatusKind}" Value="Warning">
+                                    <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding StatusKind}" Value="Error">
+                                    <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <TextBlock Text="{Binding ConversationTitle}" Style="{StaticResource Hint}"
+                           TextTrimming="CharacterEllipsis" Margin="0,2,0,0"
+                           ToolTip="{Binding ConversationTitle}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Bottom">
+                    <Button Content="新建对话" Style="{StaticResource SecondaryButton}"
+                            Command="{Binding NewConversationCommand}" Margin="0,0,8,0" />
+                    <Button Content="/resume" Style="{StaticResource GhostButton}"
+                            Command="{Binding ResumeCommand}" Margin="0,0,4,0"
+                            ToolTip="恢复已保存的对话" />
+                    <Button Content="/fork" Style="{StaticResource GhostButton}"
+                            Command="{Binding ForkCommand}" Margin="0,0,8,0"
+                            ToolTip="从当前对话分叉出新对话" />
+                    <Button Content="重试" Style="{StaticResource GhostButton}"
+                            Command="{Binding RetryCommand}" Margin="0,0,4,0" />
+                    <Button Content="复制回复" Style="{StaticResource GhostButton}"
+                            Command="{Binding CopyLastCommand}" Margin="0,0,4,0" />
+                    <Button Content="请求设置" Style="{StaticResource SecondaryButton}"
+                            Command="{Binding OpenSettingsCommand}" Margin="0,0,8,0" />
+                    <Button Content="停止" Style="{StaticResource DangerButton}"
+                            Command="{Binding StopCommand}"
+                            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 消息列表 -->
+        <Grid Grid.Row="1">
+            <ScrollViewer x:Name="MessagesScrollViewer" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Padding="24,16,16,8">
+                <ItemsControl ItemsSource="{Binding Messages}">
+                    <ItemsControl.ItemContainerStyle>
+                        <Style TargetType="ContentPresenter">
+                            <Setter Property="HorizontalAlignment" Value="Stretch" />
+                        </Style>
+                    </ItemsControl.ItemContainerStyle>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:ChatMessageViewModel}">
+                            <Grid Margin="0,0,0,14">
+                                <Border>
+                                    <Border.Style>
+                                        <Style TargetType="Border" BasedOn="{StaticResource Chat_Bubble}">
+                                            <Setter Property="Background" Value="{StaticResource AssistantBubbleBrush}" />
+                                            <Setter Property="HorizontalAlignment" Value="Left" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                                    <Setter Property="Background" Value="{StaticResource UserBubbleBrush}" />
+                                                    <Setter Property="HorizontalAlignment" Value="Right" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <StackPanel>
+                                        <!-- 推理过程 -->
+                                        <Expander Style="{StaticResource Chat_ReasoningExpander}"
+                                                  Header="推理过程"
+                                                  Visibility="{Binding HasReasoning, Converter={StaticResource BoolToVisibility}}"
+                                                  Margin="0,0,0,6">
+                                            <TextBox Style="{StaticResource MessageText}"
+                                                     Text="{Binding Reasoning, Mode=OneWay}"
+                                                     Foreground="{StaticResource TextMutedBrush}"
+                                                     FontSize="12" />
+                                        </Expander>
+
+                                        <!-- 工具调用 -->
+                                        <ItemsControl ItemsSource="{Binding ToolCalls}"
+                                                      Visibility="{Binding HasToolCalls, Converter={StaticResource BoolToVisibility}}"
+                                                      Margin="0,0,0,6">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Style="{StaticResource Badge}" Margin="0,0,6,4"
+                                                            Background="{StaticResource SurfaceHoverBrush}">
+                                                        <TextBlock Text="{Binding}" Style="{StaticResource BadgeText}"
+                                                                   FontFamily="{StaticResource MonoFont}"
+                                                                   TextWrapping="Wrap" />
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <!-- 正文 -->
+                                        <Grid>
+                                            <TextBox Style="{StaticResource MessageText}"
+                                                     Text="{Binding Text, Mode=OneWay}" />
+                                            <TextBlock Text="正在生成…" IsHitTestVisible="False">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock" BasedOn="{StaticResource Hint}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <MultiDataTrigger>
+                                                                <MultiDataTrigger.Conditions>
+                                                                    <Condition Binding="{Binding IsStreaming}" Value="True" />
+                                                                    <Condition Binding="{Binding Text}" Value="" />
+                                                                </MultiDataTrigger.Conditions>
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </MultiDataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </Grid>
+
+                                        <!-- 错误信息 -->
+                                        <TextBlock Text="{Binding ErrorText}"
+                                                   Foreground="{StaticResource DangerBrush}"
+                                                   FontFamily="{StaticResource UiFont}"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,6,0,0"
+                                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <!-- 时间与用量 -->
+                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                            <TextBlock Text="{Binding TimestampDisplay}" Style="{StaticResource Hint}" />
+                                            <TextBlock Text="{Binding UsageText}" Style="{StaticResource Hint}"
+                                                       Margin="8,0,0,0"
+                                                       Visibility="{Binding HasUsage, Converter={StaticResource BoolToVisibility}}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <!-- 未配置服务商时的空状态 -->
+            <Border Background="{StaticResource BackgroundBrush}"
+                    Visibility="{Binding HasUsableProvider, Converter={StaticResource InverseBoolToVisibility}}">
+                <Border Style="{StaticResource Card}" MaxWidth="460" VerticalAlignment="Center"
+                        HorizontalAlignment="Center" Padding="28">
+                    <StackPanel>
+                        <TextBlock Text="尚未配置可用的服务商" Style="{StaticResource SectionTitle}"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock Style="{StaticResource Caption}" TextAlignment="Center" Margin="0,8,0,0"
+                                   Text="请先打开设置，添加并启用一个服务商，填写 API Key 与模型后再回来聊天。" />
+                        <Button Content="打开设置" Style="{StaticResource PrimaryButton}"
+                                Command="{Binding OpenSettingsCommand}"
+                                HorizontalAlignment="Center" Margin="0,20,0,0" />
+                    </StackPanel>
+                </Border>
+            </Border>
+
+            <!-- /resume 会话选择器 -->
+            <Grid Background="#CC0D0F12"
+                  Visibility="{Binding IsResumePickerOpen, Converter={StaticResource BoolToVisibility}}">
+                <Border Style="{StaticResource Card}" Width="640" MaxHeight="560"
+                        VerticalAlignment="Center" HorizontalAlignment="Center" Padding="20">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="/resume" Style="{StaticResource SectionTitle}" Margin="0" />
+                                <TextBlock Text="选择一个已保存的对话继续；原来的对话不会被修改。"
+                                           Style="{StaticResource Caption}" Margin="0,4,0,0" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="关闭" Style="{StaticResource GhostButton}"
+                                    Command="{Binding CloseResumeCommand}" VerticalAlignment="Top" />
+                        </Grid>
+
+                        <Border Grid.Row="1" Style="{StaticResource Divider}" Margin="0,0,0,8" />
+
+                        <Grid Grid.Row="1" Margin="0,10,0,0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl ItemsSource="{Binding SavedConversations}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type vm:ConversationItemViewModel}">
+                                            <Border Background="{StaticResource SurfaceAltBrush}"
+                                                    BorderBrush="{StaticResource BorderSubtleBrush}"
+                                                    BorderThickness="1" CornerRadius="8"
+                                                    Padding="12,10" Margin="0,0,0,8">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <TextBlock Text="{Binding Title}"
+                                                                   Foreground="{StaticResource TextBrush}"
+                                                                   FontFamily="{StaticResource UiFont}"
+                                                                   FontSize="13.5" FontWeight="SemiBold"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                            <TextBlock Text="{Binding Caption}" Style="{StaticResource Hint}" />
+                                                            <Border Style="{StaticResource Badge}" Margin="8,0,0,0"
+                                                                    Background="{StaticResource AccentSubtleBrush}"
+                                                                    Visibility="{Binding IsFork, Converter={StaticResource BoolToVisibility}}">
+                                                                <TextBlock Text="分叉" Style="{StaticResource BadgeText}"
+                                                                           Foreground="{StaticResource AccentBrush}" />
+                                                            </Border>
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                                                VerticalAlignment="Center">
+                                                        <Button Content="恢复" Style="{StaticResource PrimaryButton}"
+                                                                Padding="12,6"
+                                                                Command="{Binding DataContext.LoadConversationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                CommandParameter="{Binding}" />
+                                                        <Button Content="删除" Style="{StaticResource DangerButton}"
+                                                                Margin="8,0,0,0"
+                                                                Command="{Binding DataContext.DeleteConversationCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                CommandParameter="{Binding}" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+
+                            <TextBlock Text="正在读取…" Style="{StaticResource Hint}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Visibility="{Binding IsLoadingConversations, Converter={StaticResource BoolToVisibility}}" />
+
+                            <TextBlock Text="还没有已保存的对话。" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource Hint}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding SavedConversations.Count}" Value="0" />
+                                                    <Condition Binding="{Binding IsLoadingConversations}" Value="False" />
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+
+                        <TextBlock Grid.Row="2" Style="{StaticResource Hint}" Margin="0,12,0,0"
+                                   Text="提示：/fork 会复制当前对话为新的分支，原对话保持不变。" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- 输入区 -->
+        <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}"
+                BorderBrush="{StaticResource BorderSubtleBrush}" BorderThickness="0,1,0,0"
+                Padding="16,10">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Grid.Column="0">
+                        <TextBox x:Name="InputBox" Style="{StaticResource MultilineField}"
+                                 MinHeight="62" MaxHeight="160"
+                                 VerticalScrollBarVisibility="Auto"
+                                 IsEnabled="{Binding HasUsableProvider}"
+                                 Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+                                 KeyDown="InputBox_KeyDown" />
+                        <TextBlock Text="输入消息…" IsHitTestVisible="False"
+                                   Foreground="{StaticResource TextMutedBrush}"
+                                   FontFamily="{StaticResource UiFont}" FontSize="13"
+                                   Margin="11,9,0,0" VerticalAlignment="Top">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding InputText}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="10,0,0,0"
+                                VerticalAlignment="Bottom">
+                        <Button Content="发送" Style="{StaticResource PrimaryButton}"
+                                MinWidth="76" IsEnabled="{Binding CanSend}"
+                                Click="SendButton_Click" />
+                    </StackPanel>
+                </Grid>
+                <TextBlock Text="Enter 发送，Shift+Enter 换行" Style="{StaticResource Hint}"
+                           Margin="0,8,0,0" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

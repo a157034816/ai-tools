@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>AiTools.Samples.Console</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Core\AiTools.Core.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.OpenAI\AiTools.OpenAI.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Anthropic\AiTools.Anthropic.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Gemini\AiTools.Gemini.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Mcp\AiTools.Mcp.csproj" />
+  </ItemGroup>
+
+</Project>
