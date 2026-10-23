@@ -49,6 +49,21 @@ public sealed class AiToolsWpfOptions
     /// <summary>对话页是否在每轮结束后自动保存会话。默认为 true。</summary>
     public bool AutoSaveConversations { get; set; } = true;
 
+    /// <summary>
+    /// 插件目录（Claude Code 兼容）。目录本身是插件时按单个插件加载，否则扫描其子目录。
+    /// 为 null 时不加载任何插件。
+    /// </summary>
+    public string? PluginsDirectory { get; set; }
+
+    /// <summary>已加载的插件；为 null 时由 <see cref="PluginsDirectory"/> 发现。宿主可直接传入自建目录。</summary>
+    public AiTools.Extensions.ExtensionCatalog? Extensions { get; set; }
+
+    /// <summary>插件斜杠命令的行为选项。为 null 时使用默认值。</summary>
+    public AiTools.Extensions.ExtensionHostOptions? ExtensionOptions { get; set; }
+
+    /// <summary>是否允许插件命令执行正文中的 <c>!`cmd`</c> 动态上下文注入。默认为 false（WPF 宿主更保守）。</summary>
+    public bool AllowPluginShellExecution { get; set; }
+
     /// <summary>校验选项并填充默认值。</summary>
     internal AiToolsWpfOptions Normalize()
     {
@@ -65,6 +80,7 @@ public sealed class AiToolsWpfOptions
             MaxToolRounds = 0;
         }
 
+        ExtensionOptions ??= new AiTools.Extensions.ExtensionHostOptions();
         return this;
     }
 }

@@ -14,6 +14,7 @@ using AiTools.Core.Chat;
 using AiTools.Core.Sessions;
 using AiTools.Wpf.Configuration;
 using AiTools.Wpf.Mvvm;
+using AiTools.Wpf.Skills;
 using AiTools.Wpf.ViewModels;
 
 namespace AiTools.Wpf.ViewModels;
@@ -120,7 +121,7 @@ public sealed class ConversationItemViewModel : ObservableObject
 /// </summary>
 public sealed class ChatViewModel : ObservableObject
 {
-    private readonly List<ChatMessage> _history = new();
+    private readonly List<HistoryEntry> _history = new();
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly SynchronizationContext? _syncContext;
     private readonly Dispatcher? _dispatcher;
@@ -141,6 +142,11 @@ public sealed class ChatViewModel : ObservableObject
     private bool _isLoadingConversations;
     private string _conversationTitle = "新对话";
     private int _baselineMessageCount;
+    private bool _isCommandPaletteOpen;
+    private SlashCommandViewModel? _selectedCommand;
+    private AiTools.Extensions.ExtensionHost? _extensionHost;
+    private PluginSkillChatToolProvider? _pluginSkillProvider;
+    private PluginMcpChatToolProvider? _pluginMcpProvider;
 
     /// <summary>创建对话 ViewModel。在 <see cref="InitializeAsync"/> 运行之前不会访问全局服务。</summary>
     public ChatViewModel()
@@ -160,6 +166,9 @@ public sealed class ChatViewModel : ObservableObject
         LoadConversationCommand = new AsyncRelayCommand(parameter => LoadConversationAsync(parameter as ConversationItemViewModel), _ => !IsBusy);
         DeleteConversationCommand = new AsyncRelayCommand(parameter => DeleteConversationAsync(parameter as ConversationItemViewModel), _ => !IsBusy);
         CloseResumeCommand = new RelayCommand(CloseResumePicker);
+        ApplyCommandCommand = new RelayCommand(parameter => ApplyCommand(parameter as SlashCommandViewModel), parameter => parameter is SlashCommandViewModel);
+        CloseCommandPaletteCommand = new RelayCommand(() => IsCommandPaletteOpen = false);
+        InsertSlashCommand = new RelayCommand(InsertSlashPrefix, () => !IsBusy);
 
         Messages.CollectionChanged += (_, _) => RaiseCommandStates();
 
@@ -265,6 +274,7 @@ public sealed class ChatViewModel : ObservableObject
         {
             if (SetProperty(ref _inputText, value ?? string.Empty))
             {
+                UpdateCommandPalette(_inputText);
                 RaiseCommandStates();
             }
         }
@@ -351,6 +361,35 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>获取关闭 resume 选择器的 Command。</summary>
     public RelayCommand CloseResumeCommand { get; }
 
+    /// <summary>获取选中命令面板中某项的 Command。</summary>
+    public RelayCommand ApplyCommandCommand { get; }
+
+    /// <summary>获取关闭命令面板的 Command。</summary>
+    public RelayCommand CloseCommandPaletteCommand { get; }
+
+    /// <summary>获取在输入框插入 <c>/</c> 的 Command。</summary>
+    public RelayCommand InsertSlashCommand { get; }
+
+    /// <summary>获取命令面板中可用的插件斜杠命令。</summary>
+    public ObservableCollection<SlashCommandViewModel> AvailableCommands { get; } = new();
+
+    /// <summary>获取或设置命令面板是否打开。</summary>
+    public bool IsCommandPaletteOpen
+    {
+        get => _isCommandPaletteOpen;
+        private set => SetProperty(ref _isCommandPaletteOpen, value);
+    }
+
+    /// <summary>获取或设置命令面板中高亮的命令。</summary>
+    public SlashCommandViewModel? SelectedCommand
+    {
+        get => _selectedCommand;
+        set => SetProperty(ref _selectedCommand, value);
+    }
+
+    /// <summary>获取是否有任何插件斜杠命令可用。</summary>
+    public bool HasPluginCommands => AvailableCommands.Count > 0;
+
     /// <summary>获取 resume 选择器中显示的已保存对话。</summary>
     public ObservableCollection<ConversationItemViewModel> SavedConversations { get; } = new();
 
@@ -404,6 +443,8 @@ public sealed class ChatViewModel : ObservableObject
 
             var previousProviderId = settings.SelectedProviderId;
             var previousModelId = settings.SelectedModelId;
+
+            InitializeExtensions(AiToolsWpf.Options);
 
             _isInitializing = true;
             try
@@ -496,6 +537,16 @@ public sealed class ChatViewModel : ObservableObject
         InputText = string.Empty;
         try
         {
+            if (await TryInvokeBuiltInCommandAsync(text).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            if (await TryExpandPluginCommandAsync(text).ConfigureAwait(false))
+            {
+                return;
+            }
+
             await SendCoreAsync(text);
         }
         catch (Exception ex)
@@ -738,7 +789,254 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>引发 <see cref="SettingsRequested"/>，以便宿主导航到设置页。</summary>
     public void RequestOpenSettings() => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
-    private async Task SendCoreAsync(string userText)
+    /// <summary>获取当前可用的插件宿主（未配置插件时为 null）。</summary>
+    public AiTools.Extensions.ExtensionHost? ExtensionHost => _extensionHost;
+
+    /// <summary>
+    /// 处理宿主的会话级斜杠命令（<c>/resume</c>、<c>/fork</c>、<c>/clear</c>、<c>/new</c>、<c>/help</c>）。
+    /// 返回 true 表示已处理，调用方应停止后续处理。
+    /// </summary>
+    public async Task<bool> TryInvokeBuiltInCommandAsync(string text)
+    {
+        if (!AiTools.Extensions.ExtensionHost.LooksLikeCommand(text))
+        {
+            return false;
+        }
+
+        var (name, arguments) = AiTools.Extensions.ExtensionHost.SplitCommand(text);
+        switch (name.ToLowerInvariant())
+        {
+            case "resume":
+                if (!CanPersist)
+                {
+                    SetStatus("未配置会话存储，无法恢复会话。", StatusKind.Warning);
+                    return true;
+                }
+
+                await OpenResumePickerAsync().ConfigureAwait(false);
+                return true;
+
+            case "fork":
+                await ForkAsync().ConfigureAwait(false);
+                return true;
+
+            case "clear":
+                Clear();
+                return true;
+
+            case "new":
+                NewConversation();
+                return true;
+
+            case "help":
+                ShowCommandHelp(arguments);
+                return true;
+
+            case "settings":
+                RequestOpenSettings();
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// 尝试把插件斜杠命令展开为一条用户消息。未命中插件命令返回 false，
+    /// 命中但渲染失败会设置错误状态并返回 true（避免把 <c>/xxx</c> 当成普通消息发给模型）。
+    /// </summary>
+    public async Task<bool> TryExpandPluginCommandAsync(string text)
+    {
+        var host = _extensionHost;
+        if (host == null)
+        {
+            return false;
+        }
+
+        if (!host.TryResolve(text, out var command, out var arguments) || command == null)
+        {
+            return false;
+        }
+
+        string rendered;
+        try
+        {
+            var invocation = host.Render(command, arguments, CurrentConversationId ?? _currentConversation?.Id);
+            rendered = invocation.Text;
+        }
+        catch (AiTools.Extensions.ExtensionCommandException ex)
+        {
+            SetStatus($"命令 /{command.Name} 执行失败：{ex.Message}", StatusKind.Error);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"命令 /{command.Name} 渲染失败：{ex.Message}", StatusKind.Error);
+            return true;
+        }
+
+        await ExpandAndSendCommandAsync(command, rendered).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task ExpandAndSendCommandAsync(AiTools.Extensions.PluginCommand command, string rendered)
+    {
+        if (IsBusy || SelectedProvider == null || SelectedModel == null)
+        {
+            SetStatus("请先选择可用的服务商和模型。", StatusKind.Warning);
+            return;
+        }
+
+        // 气泡显示命令名，完整提示词只进入请求历史。
+        await SendCoreAsync(rendered, "/" + command.ShortName).ConfigureAwait(false);
+    }
+
+    private void ShowCommandHelp(string filter)
+    {
+        var commands = AvailableCommands
+            .Where(item => string.IsNullOrWhiteSpace(filter) ||
+                           item.ShortName.IndexOf(filter.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+            .ToArray();
+
+        var lines = new List<string>
+        {
+            "会话命令：/resume · /fork · /new · /clear · /settings · /help [关键字]"
+        };
+
+        if (commands.Length == 0)
+        {
+            lines.Add("没有匹配的插件命令。");
+        }
+        else
+        {
+            lines.Add("插件命令：");
+            foreach (var item in commands)
+            {
+                lines.Add($"  {item.Title} — {item.Description}");
+            }
+        }
+
+        var bubble = new ChatMessageViewModel(false, string.Join(Environment.NewLine, lines));
+        Messages.Add(bubble);
+        IsCommandPaletteOpen = false;
+        SetStatus($"共 {commands.Length} 个插件命令。", StatusKind.Info);
+        ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void InsertSlashPrefix()
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        InputText = "/";
+        IsCommandPaletteOpen = AvailableCommands.Count > 0;
+        SelectedCommand = AvailableCommands.FirstOrDefault();
+    }
+
+    private void ApplyCommand(SlashCommandViewModel? item)
+    {
+        if (item == null)
+        {
+            return;
+        }
+
+        InputText = item.Insertion;
+        IsCommandPaletteOpen = false;
+        SelectedCommand = item;
+    }
+
+    /// <summary>根据输入内容刷新命令面板（仅在以 <c>/</c> 开头的第一个词上匹配）。</summary>
+    private void UpdateCommandPalette(string text)
+    {
+        var trimmed = (text ?? string.Empty);
+        if (!trimmed.StartsWith("/", StringComparison.Ordinal) || trimmed.StartsWith("//", StringComparison.Ordinal))
+        {
+            IsCommandPaletteOpen = false;
+            return;
+        }
+
+        var token = trimmed.Substring(1);
+        if (token.IndexOf(' ') >= 0)
+        {
+            IsCommandPaletteOpen = false;
+            return;
+        }
+
+        RefreshAvailableCommands();
+
+        var matches = AvailableCommands
+            .Where(item => item.ShortName.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           item.Name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+            .ToArray();
+
+        IsCommandPaletteOpen = matches.Length > 0;
+        SelectedCommand = matches.FirstOrDefault();
+    }
+
+    /// <summary>从插件宿主同步命令列表。可在插件重新加载后调用。</summary>
+    public void RefreshAvailableCommands()
+    {
+        var host = _extensionHost;
+        if (host == null)
+        {
+            if (AvailableCommands.Count > 0)
+            {
+                AvailableCommands.Clear();
+                OnPropertyChanged(nameof(HasPluginCommands));
+            }
+
+            return;
+        }
+
+        var commands = host.Catalog.Commands
+            .Where(command => command.UserInvocable)
+            .OrderBy(command => command.ShortName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (AvailableCommands.Count == commands.Length &&
+            AvailableCommands.Select(item => item.Name).SequenceEqual(commands.Select(item => item.Name), StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        var conflicts = host.Catalog.GetShortNameConflicts();
+        AvailableCommands.Clear();
+        foreach (var command in commands)
+        {
+            AvailableCommands.Add(new SlashCommandViewModel(command, conflicts.ContainsKey(command.ShortName)));
+        }
+
+        OnPropertyChanged(nameof(HasPluginCommands));
+        InsertSlashCommand?.RaiseCanExecuteChanged();
+    }
+
+    private void InitializeExtensions(AiToolsWpfOptions options)
+    {
+        _extensionHost = AiToolsWpf.ExtensionHost;
+        if (_extensionHost == null)
+        {
+            return;
+        }
+
+        RefreshAvailableCommands();
+
+        _pluginSkillProvider = AiToolsWpf.PluginSkillProvider;
+        if (_pluginSkillProvider != null)
+        {
+            AiToolsWpf.RegisterToolProviderOnce(_pluginSkillProvider);
+        }
+
+        _pluginMcpProvider = AiToolsWpf.PluginMcpProvider;
+        if (_pluginMcpProvider != null)
+        {
+            AiToolsWpf.RegisterToolProviderOnce(_pluginMcpProvider);
+        }
+    }
+
+
+    private async Task SendCoreAsync(string? userText, string? displayText = null)
     {
         if (IsBusy)
         {
@@ -761,13 +1059,22 @@ public sealed class ChatViewModel : ObservableObject
 
         var provider = providerChoice.Config;
         var model = modelChoice.Config;
-        var userMessage = ChatMessage.User(userText);
-        _history.Add(userMessage);
+
+        // userText 为 null 表示调用方已经把用户消息（和气泡）写入历史，这里只发起请求。
+        ChatMessageViewModel? userBubble = null;
+        if (userText != null)
+        {
+            _history.Add(new HistoryEntry(ChatMessage.User(userText), displayText));
+            userBubble = new ChatMessageViewModel(true, displayText ?? userText)
+            {
+                PromptText = userText
+            };
+            Messages.Add(userBubble);
+        }
+
         _lastTurnRolledBack = false;
 
-        var userBubble = new ChatMessageViewModel(true, userText);
         var assistantBubble = new ChatMessageViewModel(false);
-        Messages.Add(userBubble);
         Messages.Add(assistantBubble);
 
         var buffer = new StreamBuffer();
@@ -828,7 +1135,25 @@ public sealed class ChatViewModel : ObservableObject
                 ? options.DefaultSystemPrompt
                 : _settings!.SystemPrompt;
 
-            var historySnapshot = _history.ToArray();
+            // 插件命令清单：只放名称与描述，帮助模型理解斜杠命令展开后的意图。
+            var commandPrompt = _extensionHost?.BuildSystemPrompt();
+            if (!string.IsNullOrWhiteSpace(commandPrompt))
+            {
+                systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+                    ? commandPrompt
+                    : systemPrompt!.TrimEnd() + "\n\n" + commandPrompt;
+            }
+
+            // 插件技能清单：与 SkillToolset 的渐进式披露配合，模型据此决定何时 load_skill。
+            var skillPrompt = _pluginSkillProvider?.Toolset.BuildSystemPrompt();
+            if (!string.IsNullOrWhiteSpace(skillPrompt))
+            {
+                systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+                    ? skillPrompt
+                    : systemPrompt!.TrimEnd() + "\n\n" + skillPrompt;
+            }
+
+            var historySnapshot = _history.Select(entry => entry.Message).ToArray();
             ChatRequest request = new()
             {
                 Model = model.Id,
@@ -922,7 +1247,7 @@ public sealed class ChatViewModel : ObservableObject
 
             if (!string.IsNullOrWhiteSpace(historyText))
             {
-                _history.Add(ChatMessage.Assistant(historyText));
+                _history.Add(new HistoryEntry(ChatMessage.Assistant(historyText)));
             }
 
             OnUi(() =>
@@ -1078,6 +1403,8 @@ public sealed class ChatViewModel : ObservableObject
                 return;
             }
 
+            // 斜杠命令的气泡显示命令名，重试时必须重发展开后的提示词。
+            var prompt = Messages[lastUserIndex].PromptText ?? text;
             while (Messages.Count > lastUserIndex)
             {
                 Messages.RemoveAt(Messages.Count - 1);
@@ -1087,7 +1414,7 @@ public sealed class ChatViewModel : ObservableObject
             {
                 for (var index = _history.Count - 1; index >= 0; index--)
                 {
-                    if (_history[index].Role == ChatRole.User)
+                    if (_history[index].Message.Role == ChatRole.User)
                     {
                         _history.RemoveRange(index, _history.Count - index);
                         break;
@@ -1095,7 +1422,7 @@ public sealed class ChatViewModel : ObservableObject
                 }
             }
 
-            await SendCoreAsync(text);
+            await SendCoreAsync(prompt);
         }
         catch (Exception ex)
         {
@@ -1270,7 +1597,7 @@ public sealed class ChatViewModel : ObservableObject
     {
         for (var index = _history.Count - 1; index >= 0; index--)
         {
-            if (_history[index].Role == ChatRole.User)
+            if (_history[index].Message.Role == ChatRole.User)
             {
                 _history.RemoveRange(index, _history.Count - index);
                 return;
@@ -1286,7 +1613,7 @@ public sealed class ChatViewModel : ObservableObject
 
         foreach (var message in record.Messages)
         {
-            _history.Add(message.ToChatMessage());
+            _history.Add(new HistoryEntry(message.ToChatMessage(), message.DisplayText));
 
             if (string.Equals(message.Role, "system", StringComparison.OrdinalIgnoreCase))
             {
@@ -1295,7 +1622,10 @@ public sealed class ChatViewModel : ObservableObject
 
             var bubble = new ChatMessageViewModel(
                 string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase),
-                message.Text);
+                string.IsNullOrWhiteSpace(message.DisplayText) ? message.Text : message.DisplayText!)
+            {
+                PromptText = message.Role == "user" ? message.Text : null
+            };
             Messages.Add(bubble);
         }
 
@@ -1361,7 +1691,14 @@ public sealed class ChatViewModel : ObservableObject
             try
             {
                 var record = _currentConversation ?? new ConversationRecord();
-                record.Messages = _history.Select(message => ConversationMessage.FromChatMessage(message)).ToList();
+                record.Messages = _history
+                    .Select(entry =>
+                    {
+                        var message = ConversationMessage.FromChatMessage(entry.Message);
+                        message.DisplayText = entry.DisplayText;
+                        return message;
+                    })
+                    .ToList();
                 record.ProviderId = SelectedProvider?.Config.Id ?? record.ProviderId;
                 record.ModelId = SelectedModel?.Config.Id ?? record.ModelId;
                 record.Title = string.IsNullOrWhiteSpace(record.Title) || record.Title == "新对话"
@@ -1440,6 +1777,20 @@ public sealed class ChatViewModel : ObservableObject
         {
             // Dispatcher 可能已在关闭中；UI 更新可以安全地丢弃。
         }
+    }
+
+    /// <summary>历史中的一条消息，连同气泡显示文本（斜杠命令的正文很长，显示层只保留命令名）。</summary>
+    private sealed class HistoryEntry
+    {
+        public HistoryEntry(ChatMessage message, string? displayText = null)
+        {
+            Message = message;
+            DisplayText = displayText;
+        }
+
+        public ChatMessage Message { get; }
+
+        public string? DisplayText { get; }
     }
 
     private sealed class ToolRegistration

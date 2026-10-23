@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <None Include="skills\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\plugins\**\*" CopyToOutputDirectory="PreserveNewest" LinkBase="plugins" />
   </ItemGroup>
 
 </Project>

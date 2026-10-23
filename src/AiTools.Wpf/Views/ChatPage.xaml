@@ -392,6 +392,64 @@
                 BorderBrush="{StaticResource BorderSubtleBrush}" BorderThickness="0,1,0,0"
                 Padding="16,10">
             <StackPanel>
+                <!-- 斜杠命令面板 -->
+                <Border Background="{StaticResource SurfaceAltBrush}"
+                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                        CornerRadius="8" Padding="6" Margin="0,0,0,8"
+                        Visibility="{Binding IsCommandPaletteOpen, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <TextBlock Text="插件命令 · ↑↓ 选择，Enter 插入" Style="{StaticResource Hint}"
+                                   Margin="6,2,6,6" />
+                        <ListBox x:Name="CommandList" MaxHeight="190"
+                                 Background="Transparent" BorderThickness="0"
+                                 ItemsSource="{Binding AvailableCommands}"
+                                 SelectedItem="{Binding SelectedCommand, Mode=TwoWay}"
+                                 MouseDoubleClick="CommandList_MouseDoubleClick"
+                                 KeyDown="CommandList_KeyDown"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Setter Property="BorderThickness" Value="0" />
+                                    <Style.Triggers>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
+                                        </Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:SlashCommandViewModel}">
+                                    <Border Padding="8,6" CornerRadius="5" Background="Transparent">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="{Binding Title}"
+                                                           Foreground="{StaticResource TextBrush}"
+                                                           FontFamily="{StaticResource MonoFont}"
+                                                           FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Description}" Style="{StaticResource Hint}"
+                                                           TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                            <Border Grid.Column="1" Style="{StaticResource Badge}"
+                                                    Background="{StaticResource AccentSubtleBrush}"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Source}" Style="{StaticResource BadgeText}"
+                                                           Foreground="{StaticResource AccentBrush}" />
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </StackPanel>
+                </Border>
+
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -429,7 +487,7 @@
                                 Click="SendButton_Click" />
                     </StackPanel>
                 </Grid>
-                <TextBlock Text="Enter 发送，Shift+Enter 换行" Style="{StaticResource Hint}"
+                <TextBlock Text="Enter 发送，Shift+Enter 换行，输入 / 选择插件命令" Style="{StaticResource Hint}"
                            Margin="0,8,0,0" />
             </StackPanel>
         </Border>

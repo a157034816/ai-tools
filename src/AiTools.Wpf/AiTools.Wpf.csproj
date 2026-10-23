@@ -16,6 +16,7 @@
     <ProjectReference Include="..\AiTools.Anthropic\AiTools.Anthropic.csproj" />
     <ProjectReference Include="..\AiTools.Gemini\AiTools.Gemini.csproj" />
     <ProjectReference Include="..\AiTools.Skills\AiTools.Skills.csproj" />
+    <ProjectReference Include="..\AiTools.Extensions\AiTools.Extensions.csproj" />
   </ItemGroup>
 
   <ItemGroup>

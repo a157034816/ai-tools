@@ -21,6 +21,12 @@ public sealed class ConversationMessage
     /// <summary>获取或设置工具结果消息对应的工具调用标识。</summary>
     public string? ToolCallId { get; set; }
 
+    /// <summary>
+    /// 获取或设置气泡中显示的文本。斜杠命令展开后 <see cref="Text"/> 是完整提示词，
+    /// 这里保存 <c>/goal</c> 这类简短命令名；为 null 时显示 <see cref="Text"/>。
+    /// </summary>
+    public string? DisplayText { get; set; }
+
     /// <summary>获取或设置消息创建时间（UTC）。</summary>
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
 
@@ -127,6 +133,7 @@ public sealed class ConversationRecord
                 Text = message.Text,
                 Name = message.Name,
                 ToolCallId = message.ToolCallId,
+                DisplayText = message.DisplayText,
                 Timestamp = message.Timestamp
             })
         };
@@ -141,7 +148,9 @@ public sealed class ConversationRecord
         {
             if (string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(message.Text))
             {
-                var text = message.Text.Trim().Replace("\r", " ").Replace("\n", " ");
+                // 斜杠命令的正文是长提示词，标题应使用用户实际输入的命令名。
+                var text = string.IsNullOrWhiteSpace(message.DisplayText) ? message.Text : message.DisplayText!;
+                text = text.Trim().Replace("\r", " ").Replace("\n", " ");
                 return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "…";
             }
         }

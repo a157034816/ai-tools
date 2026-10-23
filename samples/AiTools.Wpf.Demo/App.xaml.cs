@@ -27,6 +27,9 @@ public partial class App : Application
             "AiTools.Wpf.Demo",
             "settings.json");
 
+        // 插件目录：Claude Code 兼容格式（.claude-plugin/plugin.json + commands/*.md）。
+        var pluginsDirectory = Path.Combine(AppContext.BaseDirectory, "plugins");
+
         AiToolsWpf.Initialize(new AiToolsWpfOptions
         {
             // 演示：把设置文件放到独立目录，避免与真实应用互相覆盖。
@@ -36,6 +39,12 @@ public partial class App : Application
             ConversationStore = new JsonConversationStore(
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AiTools.Wpf.Demo")),
             AutoSaveConversations = true,
+
+            // 插件：/goal 与 /plan 由 plugins/workflows 提供。
+            PluginsDirectory = Directory.Exists(pluginsDirectory) ? pluginsDirectory : null,
+
+            // 保持默认：不执行插件正文里的 !`cmd` 注入，只做纯文本展开。
+            AllowPluginShellExecution = false,
 
             // 技能目录同时放进系统提示词（渐进式披露：只注入名称与描述）。
             DefaultSystemPrompt = skillToolset.HasSkills

@@ -59,6 +59,12 @@ public sealed class ChatMessageViewModel : ObservableObject
         set => SetProperty(ref _text, value ?? string.Empty);
     }
 
+    /// <summary>
+    /// 获取或设置实际发送给模型的提示词。斜杠命令的气泡只显示命令名，
+    /// 这里保存展开后的完整提示词，供重试复用。为 null 时模型收到的是 <see cref="Text"/>。
+    /// </summary>
+    public string? PromptText { get; set; }
+
     /// <summary>获取或设置在消息下方显示的错误文本。</summary>
     public string ErrorText
     {

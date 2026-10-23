@@ -23,6 +23,7 @@ Console.WriteLine(response.GetText());
 - **多厂商**：OpenAI（含 DeepSeek、Moonshot/Kimi、通义千问兼容模式、Ollama、vLLM、OpenRouter、Groq 等兼容端点）、Anthropic、Gemini。
 - **完整能力面**：聊天（含流式、多模态、JSON Schema 结构化输出）、函数/工具调用、嵌入、图像生成、语音合成与转录。
 - **MCP 客户端**：stdio / Streamable HTTP / 旧版 HTTP+SSE 三种传输，`McpToolBridge` 一行代码把 MCP 工具变成模型可调用的函数。
+- **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json` 全部生效，内置 `/goal` 与 `/plan`。
 - **生产级细节**：指数退避重试、`Retry-After` 支持、统一异常体系（认证/限流/参数/服务端）、SSE 与 NDJSON 双协议解析、可注入 `HttpClient`。
 - **双目标**：`netstandard2.0` + `net8.0`，既能用于 .NET Framework 4.6.1+ 的老项目，也能享受现代运行时的性能。
 
@@ -37,6 +38,7 @@ Console.WriteLine(response.GetText());
 | `AiTools.Gemini` | Google Gemini API |
 | `AiTools.Mcp` | Model Context Protocol 客户端 |
 | `AiTools.Skills` | Agent Skills：技能发现、渐进式披露与模型可调用的技能加载工具 |
+| `AiTools.Extensions` | Extensions：兼容 Claude Code 的插件框架（清单、斜杠命令、插件技能、MCP 声明） |
 | `AiTools.Wpf` | 可复用 WPF 组件：设置页（供应商/模型配置）+ 对话页，宿主通过全局配置与接口注册 |
 
 典型引用方式：引用所选 Provider + `AiTools.Abstractions`（`Core` 会作为传递依赖自动引入）。
@@ -296,6 +298,44 @@ AiToolsWpf.RegisterToolProvider(SkillChatToolProvider.FromDirectory("skills"));
 
 详见 [`docs/SKILLS.md`](docs/SKILLS.md)；演示见 `samples/AiTools.Wpf.Demo/skills/commit-message`。
 
+## Extensions（Claude Code 兼容插件）
+
+`AiTools.Extensions` 直接读取 Claude Code 的插件目录约定：`.claude-plugin/plugin.json`、`commands/*.md`、`skills/<name>/SKILL.md`、`.mcp.json`。插件命令会展开成一条用户消息再发给模型，其中的 `$ARGUMENTS`、`$1`、`${CLAUDE_PLUGIN_ROOT}` 等占位符按 Claude Code 规则替换。
+
+```csharp
+using AiTools.Extensions;
+
+var catalog = ExtensionCatalog.LoadFromDirectory("D:/my-app/plugins");
+var host = new ExtensionHost(catalog, new ExtensionHostOptions
+{
+    ProjectDirectory = "D:/my-app",
+    EnableShellExecution = false          // 是否允许正文里的 !`cmd` 动态上下文注入
+});
+
+if (host.TryResolve("/goal 实现插件框架", out var command, out var arguments))
+{
+    var prompt = host.Render(command!, arguments).Text;  // 展开后的提示词，直接作为 user 消息发送
+}
+```
+
+仓库内的 [`plugins/workflows`](plugins/workflows) 是一个可直接使用的插件，提供两个命令：
+
+| 命令 | 作用 |
+|---|---|
+| `/goal <目标>` | 把目标转成可验证的成功标准 + 分步计划，并在后续轮次按清单汇报进度 |
+| `/plan <任务>` | 基于真实代码证据产出分步实施计划（文件、变更、验证方式、风险） |
+
+WPF 宿主一行接入，输入框中键入 `/` 即出现命令面板：
+
+```csharp
+AiToolsWpf.Initialize(new AiToolsWpfOptions
+{
+    PluginsDirectory = Path.Combine(AppContext.BaseDirectory, "plugins")
+});
+```
+
+插件的 `skills/` 会通过 `load_skill` 元工具交给模型按需加载，`.mcp.json` 声明的 MCP 服务器会自动连接并把工具并入工具列表。详见 [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md)。
+
 ## MCP 服务端 / 嗅探客户端示例（WPF 桌面版）
 
 一组完整的 MCP 工具链路示例，**两个项目均为 WPF 应用**：
@@ -405,9 +445,12 @@ src/
   AiTools.Gemini/         Gemini（聊天/嵌入/图像/音频）
   AiTools.Mcp/            MCP 客户端（stdio / Streamable HTTP / HTTP+SSE）
   AiTools.Skills/         Agent Skills（技能发现 + 渐进式披露）
+  AiTools.Extensions/     Claude Code 兼容插件（清单 / 斜杠命令 / 插件技能 / MCP 声明）
   AiTools.Wpf/            WPF 设置页与对话页
 tests/
-  AiTools.Tests/          249 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
+  AiTools.Tests/          301 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
+plugins/
+  workflows/              /goal 与 /plan 插件（Claude Code 格式）
 samples/
   AiTools.Samples.Console/        可运行的演示程序
   AiTools.Samples.McpDiscovery/   本机 MCP 服务注册表（共享）
@@ -423,6 +466,7 @@ docs/
   WPF.md                  WPF 组件集成指南
   MCP_SAMPLES.md          MCP 服务端 / 嗅探客户端示例说明
   SKILLS.md               Agent Skills 集成指南
+  EXTENSIONS.md           插件框架与斜杠命令指南
   SESSIONS.md             会话恢复与分叉指南
   MCP_AGENT_MANAGER.md    多 agent MCP 管理器说明
 ```

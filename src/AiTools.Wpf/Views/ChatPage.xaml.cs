@@ -77,6 +77,37 @@ public partial class ChatPage : UserControl
 
     private async void InputBox_KeyDown(object sender, KeyEventArgs e)
     {
+        // 命令面板打开时，↑↓ 在列表内移动，Enter 插入命令而不是发送。
+        if (ViewModel.IsCommandPaletteOpen && CommandList.Items.Count > 0)
+        {
+            switch (e.Key)
+            {
+                case Key.Up:
+                    MoveSelection(-1);
+                    e.Handled = true;
+                    return;
+                case Key.Down:
+                    MoveSelection(1);
+                    e.Handled = true;
+                    return;
+                case Key.Enter when !Keyboard.Modifiers.HasFlag(ModifierKeys.Shift):
+                    e.Handled = true;
+                    InsertSelectedCommand();
+                    return;
+                case Key.Escape:
+                    e.Handled = true;
+                    ViewModel.CloseCommandPaletteCommand.Execute(null);
+                    return;
+            }
+        }
+
+        if (e.Key == Key.Escape && ViewModel.IsResumePickerOpen)
+        {
+            e.Handled = true;
+            ViewModel.CloseResumeCommand.Execute(null);
+            return;
+        }
+
         if (e.Key != Key.Enter || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
         {
             return;
@@ -84,6 +115,55 @@ public partial class ChatPage : UserControl
 
         e.Handled = true;
         await SendAsync();
+    }
+
+    private void CommandList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        InsertSelectedCommand();
+    }
+
+    private void CommandList_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            InsertSelectedCommand();
+        }
+    }
+
+    private void MoveSelection(int delta)
+    {
+        var count = CommandList.Items.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        var index = CommandList.SelectedIndex;
+        if (index < 0)
+        {
+            index = delta > 0 ? 0 : count - 1;
+        }
+        else
+        {
+            index = (index + delta + count) % count;
+        }
+
+        CommandList.SelectedIndex = index;
+        CommandList.ScrollIntoView(CommandList.SelectedItem);
+    }
+
+    private void InsertSelectedCommand()
+    {
+        var item = CommandList.SelectedItem as SlashCommandViewModel;
+        if (item == null)
+        {
+            return;
+        }
+
+        ViewModel.ApplyCommandCommand.Execute(item);
+        InputBox.Focus();
+        InputBox.CaretIndex = InputBox.Text.Length;
     }
 
     private async Task SendAsync()

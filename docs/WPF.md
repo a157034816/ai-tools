@@ -101,6 +101,10 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 | `MaxToolRounds` | 自动工具调用最大轮数 |
 | `RequestBuilder` | 自定义请求构建钩子（返回 null 用默认逻辑） |
 | `OnTurnCompleted` | 每轮完成后的回调（日志/遥测） |
+| `PluginsDirectory` | 插件目录（Claude Code 格式）；目录本身是插件时按单个插件加载，否则递归发现 |
+| `Extensions` | 直接传入已加载的 `ExtensionCatalog`，优先于 `PluginsDirectory` |
+| `ExtensionOptions` | 插件命令行为（项目根、数据目录、超时、短名冲突策略） |
+| `AllowPluginShellExecution` | 是否执行命令正文里的 `` !`cmd` `` 注入，默认 false |
 
 ## 对话页功能
 
@@ -111,6 +115,8 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 - Token 用量展示
 - 空状态引导（无可用服务商时跳转设置）
 - Enter 发送 / Shift+Enter 换行
+- 斜杠命令面板：输入 `/` 列出插件命令，`↑`/`↓` 选择、`Enter` 插入、`Esc` 关闭
+- 内置斜杠命令：`/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help [关键字]`
 
 ### ChatViewModel 公开 API
 
@@ -128,6 +134,22 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 | `InputText` | 输入框内容 |
 | `IsBusy` / `HasUsableProvider` / `StatusMessage` / `StatusKind` | UI 状态 |
 | `SettingsRequested` / `ScrollToEndRequested` | 事件，用于宿主导航与自动滚动 |
+| `AvailableCommands` / `IsCommandPaletteOpen` / `SelectedCommand` | 插件命令面板 |
+| `ApplyCommandCommand` / `CloseCommandPaletteCommand` | 面板操作 |
+| `TryInvokeBuiltInCommandAsync(text)` | 处理会话级斜杠命令；返回 true 表示已消费 |
+| `TryExpandPluginCommandAsync(text)` | 把插件命令展开为提示词并发送 |
+| `RefreshAvailableCommands()` | 插件重新加载后刷新命令列表 |
+
+## 插件（Claude Code 兼容）
+
+```csharp
+AiToolsWpf.Initialize(new AiToolsWpfOptions
+{
+    PluginsDirectory = Path.Combine(AppContext.BaseDirectory, "plugins")
+});
+```
+
+插件提供的 `commands/*.md` 与 `skills/*/SKILL.md` 都成为斜杠命令；`skills` 同时通过 `load_skill` 工具交给模型按需加载，`.mcp.json` 声明的服务器会自动连接并合并工具。完整格式、变量替换与已知差异见 [`EXTENSIONS.md`](EXTENSIONS.md)。
 
 ## 设置页功能
 

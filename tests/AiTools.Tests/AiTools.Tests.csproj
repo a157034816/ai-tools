@@ -31,6 +31,7 @@
     <ProjectReference Include="..\..\src\AiTools.Wpf\AiTools.Wpf.csproj" />
     <ProjectReference Include="..\..\samples\AiTools.Samples.McpDiscovery\AiTools.Samples.McpDiscovery.csproj" />
     <ProjectReference Include="..\..\src\AiTools.Skills\AiTools.Skills.csproj" />
+    <ProjectReference Include="..\..\src\AiTools.Extensions\AiTools.Extensions.csproj" />
     <ProjectReference Include="..\..\samples\AiTools.Samples.McpAgents\AiTools.Samples.McpAgents.csproj" />
   </ItemGroup>
 

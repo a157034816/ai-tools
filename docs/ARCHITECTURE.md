@@ -7,6 +7,8 @@ AiTools.Core           ← HTTP、SSE/NDJSON、重试、错误映射、流式聚
         ▲
 ┌───────┴────────┬───────────────┬─────────────┬────────────┐
 AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
+                                                    ▲
+                    AiTools.Skills ──► AiTools.Extensions ──► AiTools.Wpf
 ```
 
 依赖方向严格单向：Provider 依赖 Core，Core 依赖 Abstractions，Abstractions 不依赖任何项目。
@@ -66,11 +68,33 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 - **协议层** `McpClient`：`initialize` 握手、`tools/list|call`、`resources/list|read|templates`、`prompts/list|get`、`ping`、`logging/setLevel`、进度通知。
 - **桥接层** `McpToolBridge`：把 MCP 工具转换为 `ToolDefinition` 与 `CompleteWithToolsAsync` 所需的处理器，名称做合规化并维护反查表。
 
+### AiTools.Extensions
+
+兼容 Claude Code 的插件子系统，不依赖 UI：
+
+| 文件 | 内容 |
+|---|---|
+| `PluginManifest.cs` | 解析 `.claude-plugin/plugin.json`：元数据、`commands`（路径/内联映射）、`mcpServers`（路径/内联），未支持组件记录为诊断 |
+| `PluginLoader.cs` | 单插件加载：`skills/<name>/SKILL.md`、`commands/**/*.md`、`.mcp.json`；所有路径限制在插件根内 |
+| `PluginComponents.cs` | `PluginCommand` / `PluginSkill` / `PluginMcpServer` 模型，命令与技能统一为同一调用面 |
+| `ExtensionCatalog.cs` | 多插件发现、短名冲突检测、`ToSkillCatalog()` 聚合插件技能 |
+| `CommandTemplateRenderer.cs` | 正文的单遍渲染：`$ARGUMENTS`/`$N`/`$name`、`${CLAUDE_*}`、`` !`cmd` `` 与 ` ```! ` 注入 |
+| `ExtensionHost.cs` | 斜杠命令解析/渲染、系统提示清单、MCP 服务器连接的生命周期 |
+| `ShellCommandRunner.cs` | 动态注入执行器（Windows `cmd.exe`，其他平台 `/bin/sh`，临时脚本 + 超时） |
+
+设计要点：
+
+- **单遍替换**：参数与 shell 输出注入的文本不会被再次扫描，避免 `$ARGUMENTS` 里出现 `$1` 时被二次展开。
+- **加载不抛异常**：清单非法 → `Error` 且插件不加载；路径越界、重名、缺文件 → `Warning`；不支持的组件 → `Info`。
+- **命令即提示词**：斜杠命令展开成一条 user 消息，因此与任何 Provider 的工具/会话机制正交。
+
 ## 线程与生命周期
 
 - `HttpClient`：由 `HttpClientProvider` 按 `(provider, baseAddress)` 缓存；注入自定义 `HttpClient` 时由调用方负责其生命周期。
 - 流式响应：`HttpCompletionOption.ResponseHeadersRead` 打开流；`await foreach` 结束后响应与流被释放。
 - `McpClient`：单个接收泵循环分发响应；并发 `Send` 由信号量保护；`DisposeAsync` 关闭传输（stdio 会终止子进程）。
+- `ExtensionHost`：按 `plugin:server` 缓存 `McpClient`，首次 `ConnectMcpServerAsync` 完成握手；`DisposeAsync` 逐个关闭（单个失败不影响其它）。
+- 插件命令的动态注入：每条命令在独立临时脚本中执行，默认 60 秒超时（`ExtensionHostOptions.ShellTimeout`），非零退出码中止整次调用。
 - 取消：所有异步 API 接受 `CancellationToken`，流式 API 在每轮迭代检查。
 
 ## 目标框架策略

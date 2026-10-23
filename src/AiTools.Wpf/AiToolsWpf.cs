@@ -26,7 +26,11 @@ public static class AiToolsWpf
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly List<IChatToolProvider> ToolProviders = new();
+    private static readonly object ExtensionGate = new();
     private static AppSettings? _settings;
+    private static AiTools.Extensions.ExtensionHost? _extensionHost;
+    private static Skills.PluginSkillChatToolProvider? _pluginSkillProvider;
+    private static Skills.PluginMcpChatToolProvider? _pluginMcpProvider;
 
     /// <summary>获取 <see cref="Initialize(AiToolsWpfOptions?)"/> 是否已完成。</summary>
     public static bool IsInitialized => OptionsAccessor != null;
@@ -158,6 +162,23 @@ public static class AiToolsWpf
         }
     }
 
+    /// <summary>注册一个 Tool provider，若同一实例已注册则忽略。用于按页面重复初始化的场景。</summary>
+    public static void RegisterToolProviderOnce(IChatToolProvider provider)
+    {
+        if (provider == null)
+        {
+            throw new ArgumentNullException(nameof(provider));
+        }
+
+        lock (ToolProviders)
+        {
+            if (!ToolProviders.Contains(provider))
+            {
+                ToolProviders.Add(provider);
+            }
+        }
+    }
+
     /// <summary>获取已注册 Tool provider 的快照。</summary>
     public static IReadOnlyList<IChatToolProvider> GetToolProviders()
     {
@@ -167,8 +188,100 @@ public static class AiToolsWpf
         }
     }
 
+    /// <summary>
+    /// 获取插件 skill 的 Tool provider（模型可调用 <c>load_skill</c>）。
+    /// 未配置插件或插件没有 skill 时返回 null；实例在整个进程中复用。
+    /// </summary>
+    public static Skills.PluginSkillChatToolProvider? PluginSkillProvider
+    {
+        get
+        {
+            var host = ExtensionHost;
+            if (host == null || host.Catalog.Skills.Count == 0)
+            {
+                return null;
+            }
+
+            lock (ExtensionGate)
+            {
+                return _pluginSkillProvider ??= new Skills.PluginSkillChatToolProvider(host.Catalog);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 获取插件 MCP 服务器的 Tool provider。首次访问时在后台连接全部服务器；
+    /// 未配置插件或插件没有 MCP 服务器时返回 null。
+    /// </summary>
+    public static Skills.PluginMcpChatToolProvider? PluginMcpProvider
+    {
+        get
+        {
+            var host = ExtensionHost;
+            if (host == null || host.Catalog.McpServers.Count == 0)
+            {
+                return null;
+            }
+
+            lock (ExtensionGate)
+            {
+                if (_pluginMcpProvider == null)
+                {
+                    _pluginMcpProvider = new Skills.PluginMcpChatToolProvider(host);
+                    _ = ConnectPluginMcpAsync(_pluginMcpProvider);
+                }
+
+                return _pluginMcpProvider;
+            }
+        }
+    }
+
+    private static async Task ConnectPluginMcpAsync(Skills.PluginMcpChatToolProvider provider)
+    {
+        try
+        {
+            await provider.ConnectAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // 连接失败记录在 provider.LastErrors 中，不影响对话。
+        }
+    }
+
     /// <summary>获取对话页的恢复/分叉功能所使用的会话存储。</summary>
     public static Core.Sessions.IConversationStore ConversationStore => Options.ConversationStore!;
+
+    /// <summary>
+    /// 获取插件宿主。未配置插件目录/<see cref="AiToolsWpfOptions.Extensions"/> 时返回 null。
+    /// 首次访问时发现插件并合并插件 skill 到系统提示词所需的目录。
+    /// </summary>
+    public static AiTools.Extensions.ExtensionHost? ExtensionHost
+    {
+        get
+        {
+            var options = Options;
+            if (options.Extensions == null && options.PluginsDirectory != null)
+            {
+                options.Extensions = AiTools.Extensions.ExtensionCatalog.LoadFromDirectory(options.PluginsDirectory);
+            }
+
+            if (options.Extensions == null)
+            {
+                return null;
+            }
+
+            var hostOptions = options.ExtensionOptions ?? new AiTools.Extensions.ExtensionHostOptions();
+            hostOptions.EnableShellExecution = options.AllowPluginShellExecution;
+
+            return _extensionHost != null && ReferenceEquals(_extensionHost.Catalog, options.Extensions)
+                ? _extensionHost
+                : _extensionHost = new AiTools.Extensions.ExtensionHost(options.Extensions, hostOptions);
+        }
+    }
+
+    /// <summary>获取插件提供、可直接调用的斜杠命令。</summary>
+    public static IReadOnlyList<AiTools.Extensions.PluginCommand> GetPluginCommands()
+        => ExtensionHost?.Catalog.Commands ?? Array.Empty<AiTools.Extensions.PluginCommand>();
 
     /// <summary>创建默认的设置页。</summary>
     public static Views.SettingsPage CreateSettingsPage() => new();
@@ -180,6 +293,7 @@ public static class AiToolsWpf
     {
         OptionsAccessor = options;
         _settings = null;
+        ResetExtensions();
         lock (ToolProviders)
         {
             ToolProviders.Clear();
@@ -191,6 +305,7 @@ public static class AiToolsWpf
     {
         OptionsAccessor = null;
         _settings = null;
+        ResetExtensions();
         lock (ToolProviders)
         {
             ToolProviders.Clear();
@@ -198,6 +313,24 @@ public static class AiToolsWpf
     }
 
     private static AiToolsWpfOptions? OptionsAccessor { get; set; }
+
+    private static void ResetExtensions()
+    {
+        AiTools.Extensions.ExtensionHost? host;
+        lock (ExtensionGate)
+        {
+            host = _extensionHost;
+            _extensionHost = null;
+            _pluginSkillProvider = null;
+            _pluginMcpProvider = null;
+        }
+
+        // MCP 子进程需要在重置时关闭；这里是同步路径，交给后台任务完成。
+        if (host != null)
+        {
+            _ = host.DisposeAsync();
+        }
+    }
 
     private static void Normalize(AppSettings settings)
     {

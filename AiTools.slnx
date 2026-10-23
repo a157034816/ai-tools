@@ -12,6 +12,7 @@
     <Project Path="src/AiTools.Abstractions/AiTools.Abstractions.csproj" />
     <Project Path="src/AiTools.Anthropic/AiTools.Anthropic.csproj" />
     <Project Path="src/AiTools.Core/AiTools.Core.csproj" />
+    <Project Path="src/AiTools.Extensions/AiTools.Extensions.csproj" />
     <Project Path="src/AiTools.Gemini/AiTools.Gemini.csproj" />
     <Project Path="src/AiTools.Mcp/AiTools.Mcp.csproj" />
     <Project Path="src/AiTools.OpenAI/AiTools.OpenAI.csproj" />

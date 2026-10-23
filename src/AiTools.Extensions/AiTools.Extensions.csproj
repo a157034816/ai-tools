@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <RootNamespace>AiTools.Extensions</RootNamespace>
+    <AssemblyName>AiTools.Extensions</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Claude Code compatible plugin framework for AiTools: manifests, slash commands, skills and MCP server declarations.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiTools.Skills\AiTools.Skills.csproj" />
+    <ProjectReference Include="..\AiTools.Mcp\AiTools.Mcp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+</Project>
