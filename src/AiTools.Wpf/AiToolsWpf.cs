@@ -28,7 +28,8 @@ public static class AiToolsWpf
     private static readonly List<IChatToolProvider> ToolProviders = new();
     private static readonly object ExtensionGate = new();
     private static AppSettings? _settings;
-    private static AiTools.Extensions.ExtensionHost? _extensionHost;
+    private static AiTools.Extensions.PluginHost? _pluginHost;
+    private static AiTools.Extensions.ExtensionPipeline? _pipeline;
     private static Skills.PluginSkillChatToolProvider? _pluginSkillProvider;
     private static Skills.PluginMcpChatToolProvider? _pluginMcpProvider;
 
@@ -196,7 +197,7 @@ public static class AiToolsWpf
     {
         get
         {
-            var host = ExtensionHost;
+            var host = PluginHost;
             if (host == null || host.Catalog.Skills.Count == 0)
             {
                 return null;
@@ -217,7 +218,7 @@ public static class AiToolsWpf
     {
         get
         {
-            var host = ExtensionHost;
+            var host = PluginHost;
             if (host == null || host.Catalog.McpServers.Count == 0)
             {
                 return null;
@@ -255,33 +256,79 @@ public static class AiToolsWpf
     /// 获取插件宿主。未配置插件目录/<see cref="AiToolsWpfOptions.Extensions"/> 时返回 null。
     /// 首次访问时发现插件并合并插件 skill 到系统提示词所需的目录。
     /// </summary>
-    public static AiTools.Extensions.ExtensionHost? ExtensionHost
+    public static AiTools.Extensions.PluginHost? PluginHost
     {
         get
         {
             var options = Options;
-            if (options.Extensions == null && options.PluginsDirectory != null)
+            if (options.Plugins == null && options.PluginsDirectory != null)
             {
-                options.Extensions = AiTools.Extensions.ExtensionCatalog.LoadFromDirectory(options.PluginsDirectory);
+                options.Plugins = AiTools.Extensions.PluginCatalog.LoadFromDirectory(options.PluginsDirectory);
             }
 
-            if (options.Extensions == null)
+            if (options.Plugins == null)
             {
                 return null;
             }
 
-            var hostOptions = options.ExtensionOptions ?? new AiTools.Extensions.ExtensionHostOptions();
+            var hostOptions = options.PluginHostOptions ?? new AiTools.Extensions.PluginHostOptions();
             hostOptions.EnableShellExecution = options.AllowPluginShellExecution;
 
-            return _extensionHost != null && ReferenceEquals(_extensionHost.Catalog, options.Extensions)
-                ? _extensionHost
-                : _extensionHost = new AiTools.Extensions.ExtensionHost(options.Extensions, hostOptions);
+            return _pluginHost != null && ReferenceEquals(_pluginHost.Catalog, options.Plugins)
+                ? _pluginHost
+                : _pluginHost = new AiTools.Extensions.PluginHost(options.Plugins, hostOptions);
         }
     }
 
     /// <summary>获取插件提供、可直接调用的斜杠命令。</summary>
     public static IReadOnlyList<AiTools.Extensions.PluginCommand> GetPluginCommands()
-        => ExtensionHost?.Catalog.Commands ?? Array.Empty<AiTools.Extensions.PluginCommand>();
+        => PluginHost?.Catalog.Commands ?? Array.Empty<AiTools.Extensions.PluginCommand>();
+
+    /// <summary>
+    /// 获取扩展管道：合并扩展命令、插件命令、扩展工具与插件 MCP 服务器。
+    /// 扩展（如 <c>/goal</c>、<c>/plan</c>）默认启用，因此该属性在配置插件之前也不为 null。
+    /// </summary>
+    public static AiTools.Extensions.ExtensionPipeline? Pipeline
+    {
+        get
+        {
+            var options = Options;
+            if (options.EnableExtensions == false)
+            {
+                return null;
+            }
+
+            lock (ExtensionGate)
+            {
+                if (_pipeline != null)
+                {
+                    return _pipeline;
+                }
+
+                var pluginHost = PluginHost;
+                var hostOptions = options.PluginHostOptions ?? new AiTools.Extensions.PluginHostOptions();
+                hostOptions.EnableShellExecution = options.AllowPluginShellExecution;
+
+                _pipeline = new AiTools.Extensions.ExtensionPipeline(new AiTools.Extensions.ExtensionPipelineOptions
+                {
+                    Extensions = options.Extensions ?? CreateDefaultExtensions(),
+                    Plugins = pluginHost?.Catalog,
+                    PluginHostOptions = hostOptions,
+                    WorkingDirectory = hostOptions.ProjectDirectory ?? Environment.CurrentDirectory
+                });
+
+                _ = _pipeline.StartAsync();
+                return _pipeline;
+            }
+        }
+    }
+
+    private static IReadOnlyList<AiTools.Extensions.IExtension> CreateDefaultExtensions()
+        => new AiTools.Extensions.IExtension[]
+        {
+            new AiTools.Extensions.BuiltIn.GoalExtension(),
+            new AiTools.Extensions.BuiltIn.PlanExtension()
+        };
 
     /// <summary>创建默认的设置页。</summary>
     public static Views.SettingsPage CreateSettingsPage() => new();
@@ -316,17 +363,24 @@ public static class AiToolsWpf
 
     private static void ResetExtensions()
     {
-        AiTools.Extensions.ExtensionHost? host;
+        AiTools.Extensions.PluginHost? host;
+        AiTools.Extensions.ExtensionPipeline? pipeline;
         lock (ExtensionGate)
         {
-            host = _extensionHost;
-            _extensionHost = null;
+            host = _pluginHost;
+            pipeline = _pipeline;
+            _pluginHost = null;
+            _pipeline = null;
             _pluginSkillProvider = null;
             _pluginMcpProvider = null;
         }
 
-        // MCP 子进程需要在重置时关闭；这里是同步路径，交给后台任务完成。
-        if (host != null)
+        // MCP 子进程与扩展会话需要在重置时关闭；这里是同步路径，交给后台任务完成。
+        if (pipeline != null)
+        {
+            _ = pipeline.ShutdownAsync();
+        }
+        else if (host != null)
         {
             _ = host.DisposeAsync();
         }

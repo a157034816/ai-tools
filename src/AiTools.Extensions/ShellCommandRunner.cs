@@ -19,7 +19,7 @@ public static class ShellCommandRunner
     /// <param name="command">要执行的命令。</param>
     /// <param name="workingDirectory">工作目录；为空或不存在时使用进程当前目录。</param>
     /// <param name="timeout">超时；超时后终止进程并抛出。</param>
-    /// <exception cref="ExtensionCommandException">命令以非零退出码结束、启动失败或超时。</exception>
+    /// <exception cref="CommandExecutionException">命令以非零退出码结束、启动失败或超时。</exception>
     public static string Run(string command, string workingDirectory, TimeSpan timeout)
     {
         if (string.IsNullOrWhiteSpace(command))
@@ -51,7 +51,7 @@ public static class ShellCommandRunner
         }
         catch (Exception ex)
         {
-            throw new ExtensionCommandException($"Failed to prepare the shell command \"{command}\": {ex.Message}", ex);
+            throw new CommandExecutionException($"Failed to prepare the shell command \"{command}\": {ex.Message}", ex);
         }
 
         if (isWindows)
@@ -125,7 +125,7 @@ public static class ShellCommandRunner
         }
         catch (Exception ex)
         {
-            throw new ExtensionCommandException($"Failed to start the shell command \"{command}\": {ex.Message}", ex);
+            throw new CommandExecutionException($"Failed to start the shell command \"{command}\": {ex.Message}", ex);
         }
 
         process.BeginOutputReadLine();
@@ -143,7 +143,7 @@ public static class ShellCommandRunner
                 // 进程可能已经退出。
             }
 
-            throw new ExtensionCommandException($"Shell command timed out after {timeout.TotalSeconds:F0}s: {command}");
+            throw new CommandExecutionException($"Shell command timed out after {timeout.TotalSeconds:F0}s: {command}");
         }
 
         // 等待异步读取结束，避免丢失尾部输出。
@@ -162,7 +162,7 @@ public static class ShellCommandRunner
         if (process.ExitCode != 0)
         {
             var detail = text.Trim();
-            throw new ExtensionCommandException(
+            throw new CommandExecutionException(
                 $"Shell command failed for pattern \"{command}\" (exit code {process.ExitCode})." +
                 (detail.Length == 0 ? string.Empty : "\n" + detail));
         }

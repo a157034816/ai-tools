@@ -144,7 +144,8 @@ public sealed class ChatViewModel : ObservableObject
     private int _baselineMessageCount;
     private bool _isCommandPaletteOpen;
     private SlashCommandViewModel? _selectedCommand;
-    private AiTools.Extensions.ExtensionHost? _extensionHost;
+    private AiTools.Extensions.ExtensionPipeline? _pipeline;
+    private string? _pendingContinuation;
     private PluginSkillChatToolProvider? _pluginSkillProvider;
     private PluginMcpChatToolProvider? _pluginMcpProvider;
 
@@ -537,23 +538,62 @@ public sealed class ChatViewModel : ObservableObject
         InputText = string.Empty;
         try
         {
+            // input 事件：扩展可以观察、改写或吞掉原始输入（Pi 的同名钩子）。
+            if (_pipeline != null)
+            {
+                var inputEvent = new AiTools.Extensions.InputEvent { Text = text };
+                var dispatched = await _pipeline.Runtime.DispatchAsync(
+                    AiTools.Extensions.ExtensionEvent.Input,
+                    inputEvent,
+                    CreateExtensionContext(),
+                    failClosed: inputEvent,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                var resolved = dispatched as AiTools.Extensions.InputEvent ?? inputEvent;
+                if (resolved.Suppress)
+                {
+                    SetStatus("输入已被扩展拦截。", StatusKind.Info);
+                    return;
+                }
+
+                text = resolved.Text;
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return;
+                }
+            }
+
             if (await TryInvokeBuiltInCommandAsync(text).ConfigureAwait(false))
             {
                 return;
             }
 
-            if (await TryExpandPluginCommandAsync(text).ConfigureAwait(false))
+            if (await TryExecuteCommandAsync(text).ConfigureAwait(false))
             {
                 return;
             }
 
             await SendCoreAsync(text);
+
+            // turn_end 可请求追加一轮；限制次数，避免扩展写出自我循环。
+            for (var extra = 0; extra < MaxContinuationRounds && _pendingContinuation != null; extra++)
+            {
+                var continuation = _pendingContinuation;
+                _pendingContinuation = null;
+                await SendCoreAsync(continuation, "/continue").ConfigureAwait(false);
+            }
+
+            _pendingContinuation = null;
         }
         catch (Exception ex)
         {
+            _pendingContinuation = null;
             SetStatus($"发送失败：{ex.Message}", StatusKind.Error);
         }
     }
+
+    /// <summary>单个用户轮次内允许的扩展追加轮数上限。</summary>
+    private const int MaxContinuationRounds = 3;
 
     /// <summary>取消当前请求。</summary>
     public void Stop()
@@ -624,6 +664,7 @@ public sealed class ChatViewModel : ObservableObject
             _baselineMessageCount = 0;
             _lastTurnRolledBack = false;
             _currentConversation = null;
+            _pipeline?.Runtime.State.ClearAll();
             ConversationTitle = "新对话";
             IsResumePickerOpen = false;
             RaiseCommandStates();
@@ -789,21 +830,27 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>引发 <see cref="SettingsRequested"/>，以便宿主导航到设置页。</summary>
     public void RequestOpenSettings() => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
-    /// <summary>获取当前可用的插件宿主（未配置插件时为 null）。</summary>
-    public AiTools.Extensions.ExtensionHost? ExtensionHost => _extensionHost;
+    /// <summary>获取扩展管道（未配置插件与扩展时为 null）。</summary>
+    public AiTools.Extensions.ExtensionPipeline? Pipeline => _pipeline;
+
+    /// <summary>获取插件宿主（未配置插件时为 null）。</summary>
+    public AiTools.Extensions.PluginHost? PluginHost => _pipeline?.PluginHost;
+
+    /// <summary>获取合并后的命令目录（扩展命令 + 插件命令）。</summary>
+    public AiTools.Extensions.CommandCatalog? Commands => _pipeline?.Commands;
 
     /// <summary>
-    /// 处理宿主的会话级斜杠命令（<c>/resume</c>、<c>/fork</c>、<c>/clear</c>、<c>/new</c>、<c>/help</c>）。
+    /// 处理宿主的会话级斜杠命令（<c>/resume</c>、<c>/fork</c>、<c>/clear</c>、<c>/new</c>、<c>/settings</c>、<c>/help</c>）。
     /// 返回 true 表示已处理，调用方应停止后续处理。
     /// </summary>
     public async Task<bool> TryInvokeBuiltInCommandAsync(string text)
     {
-        if (!AiTools.Extensions.ExtensionHost.LooksLikeCommand(text))
+        if (!AiTools.Extensions.PluginHost.LooksLikeCommand(text))
         {
             return false;
         }
 
-        var (name, arguments) = AiTools.Extensions.ExtensionHost.SplitCommand(text);
+        var (name, arguments) = AiTools.Extensions.PluginHost.SplitCommand(text);
         switch (name.ToLowerInvariant())
         {
             case "resume":
@@ -842,44 +889,49 @@ public sealed class ChatViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 尝试把插件斜杠命令展开为一条用户消息。未命中插件命令返回 false，
-    /// 命中但渲染失败会设置错误状态并返回 true（避免把 <c>/xxx</c> 当成普通消息发给模型）。
+    /// 执行扩展/插件斜杠命令。未命中命令返回 false（调用方按普通消息处理）；
+    /// 命中后无论成功失败都返回 true，避免把 <c>/xxx</c> 原样发给模型。
     /// </summary>
-    public async Task<bool> TryExpandPluginCommandAsync(string text)
+    public async Task<bool> TryExecuteCommandAsync(string text)
     {
-        var host = _extensionHost;
-        if (host == null)
+        var pipeline = _pipeline;
+        if (pipeline == null)
         {
             return false;
         }
 
-        if (!host.TryResolve(text, out var command, out var arguments) || command == null)
+        var execution = await pipeline.ExecuteCommandAsync(text, CreateExtensionContext()).ConfigureAwait(false);
+        if (execution == null)
         {
             return false;
         }
 
-        string rendered;
-        try
+        switch (execution.Kind)
         {
-            var invocation = host.Render(command, arguments, CurrentConversationId ?? _currentConversation?.Id);
-            rendered = invocation.Text;
-        }
-        catch (AiTools.Extensions.ExtensionCommandException ex)
-        {
-            SetStatus($"命令 /{command.Name} 执行失败：{ex.Message}", StatusKind.Error);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            SetStatus($"命令 /{command.Name} 渲染失败：{ex.Message}", StatusKind.Error);
-            return true;
-        }
+            case AiTools.Extensions.CommandExecutionKind.Error:
+                SetStatus(execution.Error ?? "命令执行失败。", StatusKind.Error);
+                return true;
 
-        await ExpandAndSendCommandAsync(command, rendered).ConfigureAwait(false);
-        return true;
+            case AiTools.Extensions.CommandExecutionKind.Display:
+                AppendAssistantBubble(execution.DisplayText ?? string.Empty);
+                SetStatus($"已执行 /{execution.Command.Name}。", StatusKind.Success);
+                return true;
+
+            case AiTools.Extensions.CommandExecutionKind.Noop:
+                SetStatus($"已执行 /{execution.Command.Name}。", StatusKind.Info);
+                PersistExtensionState();
+                return true;
+
+            case AiTools.Extensions.CommandExecutionKind.Prompt:
+                await ExpandAndSendCommandAsync(execution).ConfigureAwait(false);
+                return true;
+
+            default:
+                return false;
+        }
     }
 
-    private async Task ExpandAndSendCommandAsync(AiTools.Extensions.PluginCommand command, string rendered)
+    private async Task ExpandAndSendCommandAsync(AiTools.Extensions.CommandExecution execution)
     {
         if (IsBusy || SelectedProvider == null || SelectedModel == null)
         {
@@ -887,13 +939,23 @@ public sealed class ChatViewModel : ObservableObject
             return;
         }
 
+        // 状态型命令（/goal、/plan）在发出提示词前先落盘，避免请求失败丢状态。
+        PersistExtensionState();
+
         // 气泡显示命令名，完整提示词只进入请求历史。
-        await SendCoreAsync(rendered, "/" + command.ShortName).ConfigureAwait(false);
+        await SendCoreAsync(execution.Prompt, "/" + execution.Command.ShortName).ConfigureAwait(false);
+    }
+
+    private void AppendAssistantBubble(string text)
+    {
+        Messages.Add(new ChatMessageViewModel(false, text));
+        IsCommandPaletteOpen = false;
+        ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private void ShowCommandHelp(string filter)
     {
-        var commands = AvailableCommands
+        var matched = AvailableCommands
             .Where(item => string.IsNullOrWhiteSpace(filter) ||
                            item.ShortName.IndexOf(filter.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
             .ToArray();
@@ -903,24 +965,21 @@ public sealed class ChatViewModel : ObservableObject
             "会话命令：/resume · /fork · /new · /clear · /settings · /help [关键字]"
         };
 
-        if (commands.Length == 0)
+        if (matched.Length == 0)
         {
-            lines.Add("没有匹配的插件命令。");
+            lines.Add("没有匹配的命令。");
         }
         else
         {
-            lines.Add("插件命令：");
-            foreach (var item in commands)
+            lines.Add("扩展与插件命令：");
+            foreach (var item in matched)
             {
                 lines.Add($"  {item.Title} — {item.Description}");
             }
         }
 
-        var bubble = new ChatMessageViewModel(false, string.Join(Environment.NewLine, lines));
-        Messages.Add(bubble);
-        IsCommandPaletteOpen = false;
-        SetStatus($"共 {commands.Length} 个插件命令。", StatusKind.Info);
-        ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
+        AppendAssistantBubble(string.Join(Environment.NewLine, lines));
+        SetStatus($"共 {matched.Length} 个命令。", StatusKind.Info);
     }
 
     private void InsertSlashPrefix()
@@ -975,11 +1034,11 @@ public sealed class ChatViewModel : ObservableObject
         SelectedCommand = matches.FirstOrDefault();
     }
 
-    /// <summary>从插件宿主同步命令列表。可在插件重新加载后调用。</summary>
+    /// <summary>从扩展管道同步命令列表。可在插件或扩展重新加载后调用。</summary>
     public void RefreshAvailableCommands()
     {
-        var host = _extensionHost;
-        if (host == null)
+        var commands = _pipeline?.Commands.Commands;
+        if (commands == null || commands.Count == 0)
         {
             if (AvailableCommands.Count > 0)
             {
@@ -990,22 +1049,16 @@ public sealed class ChatViewModel : ObservableObject
             return;
         }
 
-        var commands = host.Catalog.Commands
-            .Where(command => command.UserInvocable)
-            .OrderBy(command => command.ShortName, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        if (AvailableCommands.Count == commands.Length &&
+        if (AvailableCommands.Count == commands.Count &&
             AvailableCommands.Select(item => item.Name).SequenceEqual(commands.Select(item => item.Name), StringComparer.Ordinal))
         {
             return;
         }
 
-        var conflicts = host.Catalog.GetShortNameConflicts();
         AvailableCommands.Clear();
-        foreach (var command in commands)
+        foreach (var command in commands.OrderBy(item => item.ShortName, StringComparer.OrdinalIgnoreCase))
         {
-            AvailableCommands.Add(new SlashCommandViewModel(command, conflicts.ContainsKey(command.ShortName)));
+            AvailableCommands.Add(new SlashCommandViewModel(command));
         }
 
         OnPropertyChanged(nameof(HasPluginCommands));
@@ -1014,8 +1067,8 @@ public sealed class ChatViewModel : ObservableObject
 
     private void InitializeExtensions(AiToolsWpfOptions options)
     {
-        _extensionHost = AiToolsWpf.ExtensionHost;
-        if (_extensionHost == null)
+        _pipeline = AiToolsWpf.Pipeline;
+        if (_pipeline == null)
         {
             return;
         }
@@ -1035,6 +1088,58 @@ public sealed class ChatViewModel : ObservableObject
         }
     }
 
+    /// <summary>构建命令与工具事件使用的上下文。</summary>
+    private AiTools.Extensions.CommandContext CreateExtensionContext()
+    {
+        var session = _pipeline?.Session;
+        if (session == null)
+        {
+            return new AiTools.Extensions.CommandContext
+            {
+                Runtime = new AiTools.Extensions.ExtensionRuntime(),
+                State = new AiTools.Extensions.ExtensionStateStore()
+            };
+        }
+
+        var context = session.CreateContext(
+            (message, kind) => SetStatus(message, kind switch
+            {
+                AiTools.Extensions.ExtensionNoticeKind.Success => StatusKind.Success,
+                AiTools.Extensions.ExtensionNoticeKind.Warning => StatusKind.Warning,
+                AiTools.Extensions.ExtensionNoticeKind.Error => StatusKind.Error,
+                _ => StatusKind.Info
+            }),
+            AppendAssistantBubble);
+
+        return new AiTools.Extensions.CommandContext
+        {
+            Runtime = context.Runtime,
+            State = context.State,
+            SessionId = CurrentConversationId,
+            Messages = _history.Select(entry => entry.Message).ToArray(),
+            WorkingDirectory = context.WorkingDirectory,
+            Notify = context.Notify,
+            AppendAssistantMessage = context.AppendAssistantMessage
+        };
+    }
+
+    /// <summary>把扩展状态写入当前会话记录（不触发一次完整的保存流程）。</summary>
+    private void PersistExtensionState()
+    {
+        var pipeline = _pipeline;
+        if (pipeline == null)
+        {
+            return;
+        }
+
+        var record = _currentConversation;
+        if (record == null)
+        {
+            return;
+        }
+
+        record.ExtensionState = pipeline.ExportState();
+    }
 
     private async Task SendCoreAsync(string? userText, string? displayText = null)
     {
@@ -1060,6 +1165,12 @@ public sealed class ChatViewModel : ObservableObject
         var provider = providerChoice.Config;
         var model = modelChoice.Config;
 
+        // 首次发送前确保扩展会话已启动，并绑定当前会话 ID。
+        if (_pipeline != null && !_pipeline.Session.IsStarted)
+        {
+            await _pipeline.StartAsync(CurrentConversationId).ConfigureAwait(false);
+        }
+
         // userText 为 null 表示调用方已经把用户消息（和气泡）写入历史，这里只发起请求。
         ChatMessageViewModel? userBubble = null;
         if (userText != null)
@@ -1079,6 +1190,7 @@ public sealed class ChatViewModel : ObservableObject
 
         var buffer = new StreamBuffer();
         var stopwatch = Stopwatch.StartNew();
+        var toolCallCount = 0;
 
         void ScheduleFlush()
         {
@@ -1129,19 +1241,49 @@ public sealed class ChatViewModel : ObservableObject
         {
             var options = AiToolsWpf.Options;
             var registrations = BuildToolRegistrations(options);
-            var tools = registrations.Select(registration => registration.Definition).ToArray();
+            var tools = registrations.Select(registration => registration.Definition).ToList();
 
             var systemPrompt = string.IsNullOrWhiteSpace(_settings?.SystemPrompt)
                 ? options.DefaultSystemPrompt
                 : _settings!.SystemPrompt;
 
             // 插件命令清单：只放名称与描述，帮助模型理解斜杠命令展开后的意图。
-            var commandPrompt = _extensionHost?.BuildSystemPrompt();
+            var commandPrompt = _pipeline?.BuildPluginCommandPrompt();
             if (!string.IsNullOrWhiteSpace(commandPrompt))
             {
                 systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
                     ? commandPrompt
                     : systemPrompt!.TrimEnd() + "\n\n" + commandPrompt;
+            }
+
+            // 扩展（/goal、/plan 等）在 before_agent_start 里注入各自的状态段落与工具。
+            var historySnapshot = _history.Select(entry => entry.Message).ToList();
+            if (_pipeline != null)
+            {
+                var preparation = await _pipeline.PrepareTurnAsync(
+                    CreateExtensionContext(),
+                    model.Id,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                if (!string.IsNullOrWhiteSpace(preparation.SystemPromptSections))
+                {
+                    systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+                        ? preparation.SystemPromptSections
+                        : systemPrompt!.TrimEnd() + "\n\n" + preparation.SystemPromptSections;
+                }
+
+                foreach (var message in preparation.PrependMessages)
+                {
+                    historySnapshot.Insert(0, message);
+                }
+
+                foreach (var extensionTool in preparation.Tools)
+                {
+                    if (tools.All(item => !string.Equals(item.Name, extensionTool.Definition.Name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        tools.Add(extensionTool.Definition);
+                    }
+                }
             }
 
             // 插件技能清单：与 SkillToolset 的渐进式披露配合，模型据此决定何时 load_skill。
@@ -1153,14 +1295,14 @@ public sealed class ChatViewModel : ObservableObject
                     : systemPrompt!.TrimEnd() + "\n\n" + skillPrompt;
             }
 
-            var historySnapshot = _history.Select(entry => entry.Message).ToArray();
+            var toolArray = tools.ToArray();
             ChatRequest request = new()
             {
                 Model = model.Id,
                 SystemPrompt = systemPrompt,
-                Messages = historySnapshot,
-                Tools = tools,
-                ToolChoice = tools.Length > 0 ? ToolChoice.Auto : null
+                Messages = historySnapshot.ToArray(),
+                Tools = toolArray,
+                ToolChoice = toolArray.Length > 0 ? ToolChoice.Auto : null
             };
 
             if (options.RequestBuilder != null)
@@ -1170,7 +1312,7 @@ public sealed class ChatViewModel : ObservableObject
                     Provider = provider,
                     Model = model,
                     Messages = historySnapshot,
-                    Tools = tools
+                    Tools = toolArray
                 });
 
                 if (custom != null)
@@ -1184,18 +1326,76 @@ public sealed class ChatViewModel : ObservableObject
             async Task<string> InvokeToolAsync(ToolCall call, CancellationToken cancellationToken)
             {
                 AddToolChip(assistantBubble, call);
+                toolCallCount++;
 
                 var registration = registrations.FirstOrDefault(item =>
                     string.Equals(item.Definition.Name, call.Name, StringComparison.OrdinalIgnoreCase));
-                if (registration == null)
+
+                // tool_call 事件对所有工具生效（宿主工具与扩展工具一致），可改写参数或拦截。
+                var callEvent = new AiTools.Extensions.ToolCallEvent
                 {
+                    ToolName = call.Name,
+                    ArgumentsJson = call.ArgumentsJson
+                };
+
+                if (_pipeline != null)
+                {
+                    var context = CreateExtensionContext();
+                    var dispatched = await _pipeline.Runtime.DispatchAsync(
+                        AiTools.Extensions.ExtensionEvent.ToolCall,
+                        callEvent,
+                        context,
+                        failClosed: new AiTools.Extensions.ToolCallEvent
+                        {
+                            ToolName = call.Name,
+                            BlockReason = "tool_call 处理器失败，按安全默认拒绝执行。"
+                        },
+                        cancellationToken).ConfigureAwait(false);
+
+                    callEvent = dispatched as AiTools.Extensions.ToolCallEvent ?? callEvent;
+                    if (!string.IsNullOrEmpty(callEvent.BlockReason))
+                    {
+                        return JsonSerializer.Serialize(new { error = callEvent.BlockReason });
+                    }
+
+                    call = new ToolCall(call.Id, call.Name, callEvent.ArgumentsJson);
+                }
+
+                async Task<string> RunAsync()
+                {
+                    if (registration != null)
+                    {
+                        return await registration.Provider.InvokeAsync(call, cancellationToken).ConfigureAwait(false) ?? string.Empty;
+                    }
+
+                    if (_pipeline?.Runtime.TryGetTool(call.Name) != null)
+                    {
+                        // 事件已由本方法统一分发，这里只执行工具本体，避免重复触发。
+                        var toolContext = new AiTools.Extensions.ToolContext
+                        {
+                            Runtime = _pipeline.Runtime,
+                            State = _pipeline.Runtime.State,
+                            ParentToolName = null,
+                            SessionId = CurrentConversationId
+                        };
+
+                        var toolResult = await _pipeline.Runtime.InvokeToolAsync(
+                            call.Name,
+                            call.ArgumentsJson,
+                            toolContext,
+                            cancellationToken).ConfigureAwait(false);
+
+                        PersistExtensionState();
+                        return toolResult.Text;
+                    }
+
                     return JsonSerializer.Serialize(new { error = $"未知工具：{call.Name}" });
                 }
 
+                string result;
                 try
                 {
-                    var result = await registration.Provider.InvokeAsync(call, cancellationToken).ConfigureAwait(false);
-                    return result ?? string.Empty;
+                    result = await RunAsync().ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -1203,12 +1403,28 @@ public sealed class ChatViewModel : ObservableObject
                 }
                 catch (Exception ex)
                 {
-                    return JsonSerializer.Serialize(new { error = ex.Message });
+                    result = JsonSerializer.Serialize(new { error = ex.Message });
                 }
+
+                if (_pipeline == null)
+                {
+                    return result;
+                }
+
+                // tool_result 事件：可脱敏、截断或标注结果。
+                var resultEvent = new AiTools.Extensions.ToolResultEvent { ToolName = call.Name, Text = result };
+                var transformed = await _pipeline.Runtime.DispatchAsync(
+                    AiTools.Extensions.ExtensionEvent.ToolResult,
+                    resultEvent,
+                    CreateExtensionContext(),
+                    failClosed: resultEvent,
+                    cancellationToken).ConfigureAwait(false);
+
+                return (transformed as AiTools.Extensions.ToolResultEvent ?? resultEvent).Text;
             }
 
             ChatResponse response;
-            if (tools.Length > 0)
+            if (toolArray.Length > 0)
             {
                 response = await client.StreamWithToolsExactAsync(
                     request,
@@ -1237,6 +1453,17 @@ public sealed class ChatViewModel : ObservableObject
                 };
             }
 
+            // turn_end：扩展可在此追加状态说明或请求再追加一轮。
+            AiTools.Extensions.TurnEndEvent? turnEnd = null;
+            if (_pipeline != null)
+            {
+                turnEnd = await _pipeline.PublishTurnEndAsync(
+                    CreateExtensionContext(),
+                    buffer.SnapshotText(),
+                    toolCallCount,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
             var streamedText = buffer.SnapshotText();
             var streamedReasoning = buffer.SnapshotReasoning();
 
@@ -1263,6 +1490,15 @@ public sealed class ChatViewModel : ObservableObject
                 SetStatus(usageText == null ? "完成。" : $"完成 · {usageText}", StatusKind.Success);
                 ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
             });
+
+            // 扩展状态（目标进度、计划步骤）随本轮一起保存。
+            PersistExtensionState();
+
+            if (turnEnd is { Continue: true, ContinuationPrompt: { Length: > 0 } continuation })
+            {
+                // turn_end 请求追加一轮：提示词由扩展给出，由 SendAsync 的循环真正发出。
+                _pendingContinuation = continuation;
+            }
 
             try
             {
@@ -1630,6 +1866,12 @@ public sealed class ChatViewModel : ObservableObject
         }
 
         _currentConversation = record;
+        if (_pipeline != null)
+        {
+            _pipeline.ImportState(record.ExtensionState);
+            _pipeline.Session.UpdateSessionId(record.Id);
+        }
+
         _baselineMessageCount = _history.Count;
         ConversationTitle = string.IsNullOrWhiteSpace(record.Title) ? "新对话" : record.Title;
         _lastTurnRolledBack = false;
@@ -1691,6 +1933,11 @@ public sealed class ChatViewModel : ObservableObject
             try
             {
                 var record = _currentConversation ?? new ConversationRecord();
+                if (_pipeline != null)
+                {
+                    record.ExtensionState = _pipeline.ExportState();
+                }
+
                 record.Messages = _history
                     .Select(entry =>
                     {

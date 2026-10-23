@@ -52,7 +52,7 @@ public sealed class AiToolsPlugin
     public IReadOnlyList<PluginMcpServer> McpServers { get; init; } = Array.Empty<PluginMcpServer>();
 
     /// <summary>获取加载该插件时产生的诊断。</summary>
-    public IReadOnlyList<ExtensionDiagnostic> Diagnostics { get; init; } = Array.Empty<ExtensionDiagnostic>();
+    public IReadOnlyList<PluginDiagnostic> Diagnostics { get; init; } = Array.Empty<PluginDiagnostic>();
 
     /// <inheritdoc />
     public override string ToString() => Name;

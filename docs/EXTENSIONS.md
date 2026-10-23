@@ -1,157 +1,203 @@
-# Extensions（Claude Code 兼容插件）
+# Extensions（可编程扩展）
 
-`AiTools.Extensions` 让 AiTools 直接消费 Claude Code 的插件包：同一份插件目录既能被 `claude` 加载，也能被 AiTools 加载。它不依赖任何 UI 框架，控制台、WPF 与服务端共用同一套宿主。
+`AiTools.Extensions` 有两层，二者共用同一个调用面：
 
-## 支持的组件
-
-| 组件 | 目录约定 | AiTools 中的表现 |
+| 层 | 形态 | 适合 |
 |---|---|---|
-| 清单 | `.claude-plugin/plugin.json` | 名称、描述、版本、`commands` 内联/路径、`mcpServers` 内联/路径 |
-| 命令 | `commands/*.md`（子目录成为 `:` 段） | 斜杠命令，调用后展开为一条用户消息 |
-| 技能 | `skills/<name>/SKILL.md` | 既是斜杠命令，也可经 `load_skill` 由模型按需加载 |
-| MCP 服务 | `.mcp.json` / manifest `mcpServers` | 连接服务器并把它提供的工具并入工具列表 |
+| **Extensions**（本页主述） | C# 类实现 `IExtension`，可注册命令、工具、事件处理器、持有会话状态 | 需要状态、工具、拦截、生命周期的工作流 |
+| **Plugins**（见下节） | Claude Code 插件目录：`plugin.json` + `commands/*.md` + `skills/` + `.mcp.json` | 分发既有的 Claude Code 插件包 |
 
-`agents`、`hooks`、`lspServers`、`outputStyles`、`workflows`、`themes`、`monitors`、`channels` 等组件目前**不执行**，加载时以 `Info` 级诊断说明被忽略，不会导致插件加载失败。
+设计取向来自 Pi：**扩展是可执行行为，不是提示词片段**。因此 `/goal` 与 `/plan` 不是两段 Markdown，而是带状态、工具与跨轮次注入的扩展。
 
-## 快速开始
+## 运行时结构
+
+```
+ExtensionPipeline          宿主唯一入口：命令目录、工具表、会话、状态导入导出
+├── ExtensionRuntime       注册表 + 事件分发（Pi 的 pi.on / registerTool / registerCommand）
+│   ├── ExtensionCommand   /goal 这类代码命令
+│   ├── ExtensionTool      模型可调用，带曝光级别
+│   └── ExtensionSession   session_start / session_shutdown、清理回调
+├── ExtensionStateStore    按扩展名分桶的 JSON 状态，可选持久化
+├── CommandCatalog         扩展命令 + 插件命令的统一解析
+└── PluginHost             Claude Code 插件的渲染与 MCP 连接
+```
+
+## 编写一个扩展
 
 ```csharp
-using AiTools.Extensions;
-
-var catalog = ExtensionCatalog.LoadFromDirectory("D:/my-app/plugins");
-foreach (var diagnostic in catalog.Diagnostics)
+public sealed class CounterExtension : IExtension
 {
-    Console.WriteLine(diagnostic);
-}
+    public string Name => "counter";              // 同时是状态桶名
+    public string? Description => "Counts mentions.";
 
-var host = new ExtensionHost(catalog, new ExtensionHostOptions
-{
-    ProjectDirectory = "D:/my-app",   // ${CLAUDE_PROJECT_DIR}
-    EnableShellExecution = false      // 是否执行正文中的 !`cmd`
-});
+    public void Activate(IExtensionApi api)
+    {
+        api.RegisterCommand("count", "统计提及次数", async (ctx, args, ct) =>
+        {
+            var n = ctx.State.Get<int>(Name, "n") + 1;
+            ctx.State.Set(Name, "n", n);
+            return CommandResult.Display($"第 {n} 次");
+        });
 
-if (host.TryResolve("/goal 实现插件框架", out var command, out var arguments))
-{
-    var prompt = host.Render(command!, arguments, sessionId: "abc").Text;
-    // 把 prompt 作为 ChatMessage.User 发送
-}
-```
+        api.RegisterTool(
+            ToolDefinition.FromJsonSchema("counter_bump", "Bump the counter.", """{"type":"object","properties":{}}"""),
+            (call, ctx, ct) =>
+            {
+                var n = ctx.State.Get<int>(Name, "n") + 1;
+                ctx.State.Set(Name, "n", n);
+                return Task.FromResult($"count={n}");
+            });
 
-### 目录发现规则
-
-- 传入的路径本身含 `.claude-plugin/plugin.json`、`SKILL.md`、`skills/` 或 `commands/` 时，按**单个插件**加载。
-- 否则扫描子目录（默认递归），把符合上述条件的目录当作插件根；`.`、`node_modules`、`bin`、`obj`、`.git` 会被跳过。
-- 同名插件后者覆盖前者，并给出 `Warning` 诊断。
-
-## 命令名与冲突
-
-命令的限定名是 `plugin:command`（`commands/db/migrate.md` → `db:migrate`）。调用时可以写：
-
-| 写法 | 何时可用 |
-|---|---|
-| `/workflows:goal` | 总是可用 |
-| `/goal` | 短名在所有插件中唯一时可用；冲突时 `TryResolve` 返回 false，需用限定名 |
-
-`ExtensionCatalog.GetShortNameConflicts()` 返回冲突组，`ExtensionHostOptions.AllowAmbiguousShortNames` 为 true 时冲突的短名会取第一个匹配。
-
-## 命令正文的渲染
-
-`CommandTemplateRenderer` 按 Claude Code 的规则处理正文，替换是**单遍**的——由参数值或命令输出注入的文本不会被再次扫描。
-
-| 语法 | 行为 |
-|---|---|
-| `$ARGUMENTS` | 完整参数串 |
-| `$0` / `$ARGUMENTS[0]` | 第 1 个参数（shell 风格引号分组）；越界时保持原样 |
-| `$name` | `arguments: [issue, branch]` 声明的具名位置参数；缺失时展开为空串 |
-| `\$1` | 字面量 `$1` |
-| `${CLAUDE_PLUGIN_ROOT}` | 插件根目录 |
-| `${CLAUDE_SKILL_DIR}` | 技能目录（命令文件定义时为插件根） |
-| `${CLAUDE_PROJECT_DIR}` | `ExtensionHostOptions.ProjectDirectory` |
-| `${CLAUDE_SESSION_ID}` | `Render` 传入的会话 ID |
-| `${CLAUDE_PLUGIN_DATA}` | 持久化数据目录 |
-| `` !`cmd` `` | 行内动态注入，命令输出替换该片段 |
-| ` ```! ` 块 | 多行动态注入 |
-
-规律：
-
-- 正文没有消费任何参数时，`Render` 会在末尾追加 `ARGUMENTS: <原始参数>`，模型仍能看到用户输入。
-- 动态注入命令以非零退出码结束会抛出 `ExtensionCommandException`，整次调用中止——与 Claude Code 行为一致，不会把半成品提示词发给模型。
-- `EnableShellExecution = false`（WPF 宿主默认）时，注入点被替换为 `[shell command execution disabled by policy]`。
-- 注入输出只在行尾裁剪：保留内部换行，去掉尾部 `\r\n`。
-
-## 插件技能
-
-`skills/<name>/SKILL.md` 的 frontmatter 支持 `description`、`argument-hint`、`allowed-tools`、`disallowed-tools`、`arguments`、`model`、`disable-model-invocation`、`user-invocable`。
-
-`ExtensionCatalog.ToSkillCatalog()` 把插件的技能转成 `SkillCatalog`：短名唯一时保留短名，冲突时改用 `plugin:name`。WPF 侧由 `PluginSkillChatToolProvider` 包装成 `IChatToolProvider`，模型可以调用 `load_skill` / `read_skill_file`。
-
-## MCP 服务器
-
-`.mcp.json` 与 manifest 的 `mcpServers` 支持三种形态：
-
-```json
-{
-  "mcpServers": {
-    "local": { "command": "npx", "args": ["-y", "some-server"], "env": { "TOKEN": "x" } },
-    "remote": { "type": "http", "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer x" } },
-    "legacy": { "type": "sse", "url": "https://example.com/sse" }
-  }
+        // 每轮把状态回灌到系统提示。
+        api.On<BeforeAgentStartEvent>(ExtensionEvent.BeforeAgentStart, (e, ctx, ct) =>
+        {
+            e.PromptSections.Add($"## Counter\n\ncount={ctx.State.Get<int>(Name, "n")}");
+            return Task.FromResult<BeforeAgentStartEvent?>(null);
+        });
+    }
 }
 ```
 
-`${CLAUDE_PLUGIN_ROOT}` 会在 `command`、`args`、`env`、`url`、`headers` 中展开（路径统一使用正斜杠）。通过 `ExtensionHost.ConnectMcpServerAsync` 连接；WPF 侧的 `PluginMcpChatToolProvider` 会连接全部服务器、把工具名加上 `plugin_<server>_` 前缀，并在 `LastErrors` 中报告连接失败。
-
-## WPF 集成
+注册：
 
 ```csharp
 AiToolsWpf.Initialize(new AiToolsWpfOptions
 {
-    PluginsDirectory = Path.Combine(AppContext.BaseDirectory, "plugins"),
-    AllowPluginShellExecution = false,   // 默认值
-    ExtensionOptions = new ExtensionHostOptions { ProjectDirectory = Environment.CurrentDirectory }
+    Extensions = new IExtension[] { new CounterExtension(), new GoalExtension(), new PlanExtension() }
 });
 ```
 
-| 行为 | 说明 |
-|---|---|
-| 命令面板 | 输入框以 `/` 开头时列出插件命令，`↑`/`↓` 选择，`Enter` 插入，`Esc` 关闭 |
-| 命令展开 | 命中插件命令→渲染正文并作为 user 消息发送；气泡只显示 `/goal`，完整提示词保存在历史与 `PromptText` 中 |
-| 未命中 | `/unknown` 按普通消息发送（模型可以看到），不会静默丢弃 |
-| 内置命令 | `/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help [关键字]` 由 ViewModel 直接处理，不发送请求 |
-| 系统提示 | 不可由模型调用的命令（`disable-model-invocation`）不会出现在清单里 |
-| 失败 | 渲染或 shell 注入失败时设置 `StatusKind.Error` 状态，不发送请求 |
+`Activate` 只在构造管道时调用一次，**必须快速返回且不启动进程或定时器**（与 Pi 的工厂约束一致）；长生命周期资源放到 `SessionStart`，并在 `SessionShutdown` 里幂等释放。
 
-## 仓库内的 `plugins/workflows`
+## 事件
 
+| 事件 | 语义 | 载荷 / 可做的事情 |
+|---|---|---|
+| `SessionStart` | 会话开始 | `SessionStartEvent`：启动资源、读会话状态 |
+| `SessionShutdown` | 会话关闭 | 释放资源；处理器必须幂等 |
+| `Input` | 用户输入 | `InputEvent`：改写 `Text` 或 `Suppress` 吞掉 |
+| `BeforeAgentStart` | 请求发出前 | `BeforeAgentStartEvent`：追加 `PromptSections`、`PrependMessages` |
+| `ToolCall` | 工具调用前 | `ToolCallEvent`：改写 `ArgumentsJson`、`BlockReason` 拦截 |
+| `ToolResult` | 工具返回后 | `ToolResultEvent`：脱敏/截断 `Text` |
+| `TurnEnd` | 一轮结束 | `TurnEndEvent`：`Continue` + `ContinuationPrompt` 请求追加一轮 |
+
+组合语义（与 Pi 一致）：
+
+- 处理器按**注册顺序**执行。
+- 转换类事件链式传递：后一个看到前一个的修改。
+- **拦截类 fail-closed**：`ToolCall` 处理器抛异常时按拒绝执行处理，不会放行。
+- 通知类（`SessionStart` 等）的异常被吞掉，不打断对话。
+- `pi.on` 的等价物返回一个取消订阅的 `Action`。
+
+## 工具与曝光级别
+
+| 曝光 | 声明给模型 | 可被其它工具调用 |
+|---|---|---|
+| `Direct`（默认） | ✅ | ✅ |
+| `ModelOnly` | ✅ | ❌ |
+| `Deferred` | ❌ | ✅（登记后即可调用） |
+| `Hidden` | ❌ | ❌（用于撤回） |
+
+调用路径：
+
+- 模型调用 → 宿主 → `ToolCall` 事件 → `InvokeToolAsync` → `ToolResult` 事件。
+- 扩展调用扩展 → `ctx.ExecuteToolAsync(name, json)`，走同一条事件链（`Runtime.ExecuteToolAsync`）。
+- 宿主已经自行分发过事件时用 `Runtime.InvokeToolAsync`，避免重复触发。
+
+单个工具执行抛异常会变成模型可见的错误结果；`ToolCall` 被拦截时返回 `{"error": "<reason>"}`。
+
+## 会话状态
+
+`ExtensionStateStore` 按扩展名分桶，值以 JSON 保存：
+
+```csharp
+ctx.State.Set(Name, "plan", myPlanState);        // 强类型写入（序列化）
+var plan = ctx.State.Get<PlanState>(Name, "plan"); // 不存在时返回 default
+if (ctx.State.TryGet<int>(Name, "n", out var n)) { /* 区分缺失与 0 */ }
 ```
-plugins/workflows/
-├── .claude-plugin/plugin.json
-└── commands/
-    ├── goal.md     → /goal <目标>
-    └── plan.md     → /plan <任务>
+
+分层（对照 Pi 的状态建议）：
+
+| 需求 | 位置 |
+|---|---|
+| 跟随对话分支、不进模型上下文 | `ExtensionStateStore` + `ConversationRecord.ExtensionState` |
+| 要让模型看到 | `BeforeAgentStart` 注入 `PromptSections` |
+| 要出现在对话记录里 | `ctx.AppendMessage(...)` |
+| 跨会话保存 | 宿主自行持久化 `ExportState()` 的结果 |
+
+WPF 宿主在每轮结束、命令执行、工具调用后写入 `ConversationRecord.ExtensionState`；`/resume` 恢复、`/fork` 复制、`/new` 清空。
+
+## 内置扩展
+
+### `/goal`（`GoalExtension`）
+
+| 交互 | 行为 |
+|---|---|
+| `/goal <目标>` | 覆盖当前目标并发出指令提示词 |
+| `/goal` | 显示当前目标与进度；无目标时给出用法 |
+| `goal_plan` 工具 | 记录 objective、criteria、steps、assumptions |
+| `goal_update` 工具 | `completeStep` / `proveCriterion` + **必填** `evidence` / `blocker` |
+| 每轮 | 注入 `## Session goal`：标准勾选状态、`N/M steps`、假设、行为约束 |
+
+没有证据就不能把标准标记为完成——这是刻意的：目标完成的判据是可观察的证据，不是模型的自述。
+
+### `/plan`（`PlanExtension`）
+
+| 交互 | 行为 |
+|---|---|
+| `/plan <任务>` | 重置计划并要求先取证再出计划 |
+| `/plan` | 显示当前计划与完成度；无计划时给出用法 |
+| `plan_save` 工具 | 记录 context、steps（每步必须有 `verify`）、risks、outOfScope、openQuestions |
+| `plan_step` 工具 | `completeStep` / `approve` |
+| 每轮 | 注入 `## Implementation plan`；未确认时明确写入 "NOT approved" |
+
+## Claude Code 插件（声明式层）
+
+同一套目录约定仍然支持：`.claude-plugin/plugin.json`、`commands/*.md`、`skills/<name>/SKILL.md`、`.mcp.json`。
+
+```csharp
+AiToolsWpf.Initialize(new AiToolsWpfOptions
+{
+    PluginsDirectory = Path.Combine(AppContext.BaseDirectory, "plugins")
+});
 ```
 
-- `/goal`：把目标改写成一句结果导向的陈述、2–5 条可验证的成功标准、假设与待确认问题、按依赖排序的清单，并说明后续每轮如何汇报进度；目标为空时反问而不是编造。
-- `/plan`：先要求用工具确认文件/类型/调用方，再给出每步的文件、变更、验证方式与风险，明确列出 out-of-scope 与 open questions，并在计划后停下等待确认。
+命令正文支持 `$ARGUMENTS`、`$ARGUMENTS[N]`、`$N`、`$name`、`\$1` 字面量、`${CLAUDE_PLUGIN_ROOT}`/`${CLAUDE_SKILL_DIR}`/`${CLAUDE_PROJECT_DIR}`/`${CLAUDE_SESSION_ID}`/`${CLAUDE_PLUGIN_DATA}`，以及 `` !`cmd` `` / ```` ```! ```` 动态注入（单遍替换，输出不会被再次扫描）。
 
-两者都使用 `$ARGUMENTS`；未传参数时正文自行反问，因此不会追加 `ARGUMENTS:` 块。
+### 命令优先级
 
-## 诊断与容错
+扩展命令先登记，插件命令随后登记，**同名的全名精确命中的优先**：
 
-加载过程**永不抛出异常**：
-
-| 场景 | 结果 |
+| 输入 | 命中 |
 |---|---|
-| 清单 JSON 非法 | `Error`，插件不加载 |
-| 路径含 `..` 或逃出插件根 | `Warning`，该路径被忽略 |
-| 命令名重复、技能重名 | `Warning`，保留第一个 |
-| 未知顶层字段 | 忽略（`commands`/`mcpServers` 内的未知键不报错） |
-| 不支持的组件（`hooks` 等） | `Info` |
-| 目录不存在 | `Warning` / `Error`，返回空插件 |
+| `/goal` | 扩展命令 `goal`（全名与短名相同，精确命中） |
+| `/workflows:goal` | 插件命令 `workflows:goal` |
+| 短名冲突时 | 面板插入限定名，例如 `/workflows:goal ` |
 
-## 与 Claude Code 的差异
+### 插件侧限制
 
-- 不读取 `~/.claude/settings.json`、marketplace，也不处理插件的 `userConfig`、`${user_config.KEY}`。
-- 不做权限系统：`allowed-tools` 只作为元数据暴露，是否拦截由宿主决定。
-- `context: fork`、`background`、`paths`、`hooks`、`shell` 等 Claude Code 专属前端字段不生效。
-- 动态注入使用一条合并的 shell 脚本（Windows `cmd.exe`、其他平台 `/bin/sh`），而不是真实的 Bash/PowerShell 工具，因此不共享 Bash 工具的超时与输出上限策略。
+`agents`、`hooks`、`lspServers`、`outputStyles`、`workflows`、`themes`、`monitors`、`channels`、`userConfig` 不执行；加载时以 `Info` 级诊断说明被忽略。无 marketplace、无权限系统：`allowed-tools` 只作为元数据。
+
+## 宿主集成（WPF）
+
+| 选项 | 含义 |
+|---|---|
+| `EnableExtensions` | 是否启用可编程扩展，默认 true |
+| `Extensions` | 要激活的扩展；null 时使用内置 `GoalExtension` + `PlanExtension`，空数组则禁用 |
+| `PluginsDirectory` / `Plugins` | Claude Code 插件目录或已加载的插件 |
+| `PluginHostOptions` | 插件命令渲染选项（项目根、超时、短名冲突策略） |
+| `AllowPluginShellExecution` | 是否执行插件正文的 `` !`cmd` ``，默认 false |
+
+`ChatViewModel` 侧：`Pipeline`、`Commands`、`TryExecuteCommandAsync`、`AvailableCommands`、`IsCommandPaletteOpen`。宿主级命令 `/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help` 由 ViewModel 直接处理，不发送请求。
+
+## 与 Pi 的差异
+
+| Pi | 本项目 |
+|---|---|
+| TypeScript + `jiti`，扩展是文件 | C# 类，编译期注册；无热重载 |
+| `context` / `context_with_system` / provider 钩子 | 未实现：只到 `BeforeAgentStart` 粒度 |
+| `tool_execution_start/update/end`、`provider_stream_event` | 未实现 |
+| `ctx.ui`（select/confirm/input） | 仅 `Notify` 与 `AppendMessage`；WPF 侧映射为状态栏/气泡 |
+| `appendEntry`、分支感知状态重建 | 用 `ExtensionStateStore` + `ConversationRecord.ExtensionState` 代替，`/fork` 直接复制 |
+| `registerProvider` / `registerMcpServer` / `registerVirtualModel` | 未实现；MCP 仍由插件声明或宿主注册 |
+| 工具 render 钩子 | 未实现（WPF 只有工具 chip） |

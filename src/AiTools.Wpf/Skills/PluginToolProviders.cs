@@ -22,7 +22,7 @@ public sealed class PluginSkillChatToolProvider : IChatToolProvider
     /// <summary>从插件目录创建 provider。</summary>
     /// <param name="catalog">已加载的插件。</param>
     /// <param name="options">skill 工具选项。</param>
-    public PluginSkillChatToolProvider(ExtensionCatalog catalog, SkillToolOptions? options = null)
+    public PluginSkillChatToolProvider(PluginCatalog catalog, SkillToolOptions? options = null)
     {
         if (catalog == null)
         {
@@ -57,7 +57,7 @@ public sealed class PluginSkillChatToolProvider : IChatToolProvider
 /// </remarks>
 public sealed class PluginMcpChatToolProvider : IChatToolProvider
 {
-    private readonly ExtensionHost _host;
+    private readonly PluginHost _host;
     private readonly Dictionary<string, ServerTools> _servers = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
     private readonly List<string> _errors = new();
@@ -65,7 +65,7 @@ public sealed class PluginMcpChatToolProvider : IChatToolProvider
     private bool _connected;
 
     /// <summary>创建 provider。</summary>
-    public PluginMcpChatToolProvider(ExtensionHost host)
+    public PluginMcpChatToolProvider(PluginHost host)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
     }
@@ -231,7 +231,7 @@ public sealed class PluginMcpChatToolProvider : IChatToolProvider
 
     private async Task<AiTools.Mcp.McpClient> ConnectServerAsync(PluginMcpServer server, CancellationToken cancellationToken)
     {
-        // ExtensionHost 已经缓存了每个服务器的客户端与握手状态。
+        // PluginHost 已经缓存了每个服务器的客户端与握手状态。
         await _host.ConnectMcpServerAsync(server, cancellationToken).ConfigureAwait(false);
         var client = _host.TryGetMcpClient(server.QualifiedName);
         if (client == null)

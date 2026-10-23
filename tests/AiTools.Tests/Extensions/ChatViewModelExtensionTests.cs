@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using AiTools.Abstractions;
 using AiTools.Core.Sessions;
 using AiTools.Extensions;
+using AiTools.Extensions.BuiltIn;
 using AiTools.Wpf;
 using AiTools.Wpf.Configuration;
 using AiTools.Wpf.ViewModels;
@@ -40,7 +41,7 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         AiToolsWpf.Initialize(options =>
         {
             options.ConversationStore = new InMemoryConversationStore();
-            options.AutoSaveConversations = false;
+            options.AutoSaveConversations = true;
             options.SettingsStore = new FixedSettingsStore(providerConfig: new ProviderConfig
             {
                 Id = "test",
@@ -77,9 +78,17 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         var vm = new ChatViewModel();
         await vm.InitializeAsync();
 
-        var command = Assert.Single(vm.AvailableCommands);
-        Assert.Equal("goal", command.ShortName);
-        Assert.Equal("/goal <goal>", command.Title);
+        // 内置扩展提供 /goal 与 /plan；测试插件另提供 /workflows:goal。
+        Assert.Equal(3, vm.AvailableCommands.Count);
+        var goal = Assert.Single(vm.AvailableCommands, item => item.Name == "goal");
+        Assert.Equal("/goal <目标描述>", goal.Title);
+        Assert.True(goal.IsCodeCommand);
+
+        var pluginCommand = Assert.Single(vm.AvailableCommands, item => item.Name == "workflows:goal");
+        Assert.False(pluginCommand.IsCodeCommand);
+        // 插件命令的短名与扩展命令冲突，必须用限定名插入。
+        Assert.True(pluginCommand.IsAmbiguous);
+        Assert.Equal("/workflows:goal ", pluginCommand.Insertion);
         Assert.True(vm.HasPluginCommands);
     }
 
@@ -114,7 +123,7 @@ public sealed class ChatViewModelExtensionTests : IDisposable
     }
 
     [Fact]
-    public async Task SendingPluginCommand_ExpandsPromptInsteadOfRawText()
+    public async Task SendingExtensionCommand_ExpandsPromptInsteadOfRawText()
     {
         var vm = new ChatViewModel();
         await vm.InitializeAsync();
@@ -126,11 +135,106 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         var userMessage = request.Messages[request.Messages.Count - 1];
         Assert.Equal(ChatRole.User, userMessage.Role);
         var text = userMessage.GetText();
-        Assert.Contains("Objective: ship the plugin framework", text);
+        Assert.Contains("ship the plugin framework", text);
+        Assert.Contains(GoalExtension.PlanToolName, text);
         Assert.DoesNotContain("/goal ship", text);
 
-        // 气泡显示原始命令，完整提示词只进入请求历史。
+        // 气泡显示命令名，完整提示词只进入请求历史。
         Assert.Contains(vm.Messages, message => message.IsUser && message.Text == "/goal");
+    }
+
+    [Fact]
+    public async Task GoalCommand_InjectsGoalStateOnNextTurn()
+    {
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+
+        // 第一轮：/goal 建立状态并发出指令。
+        vm.InputText = "/goal ship it";
+        await vm.SendAsync();
+
+        // 模型通过 goal_plan 记录目标与标准（相当于一次工具调用）。
+        var pipeline = vm.Pipeline!;
+        var recorded = await pipeline.Runtime.ExecuteToolAsync(
+            GoalExtension.PlanToolName,
+            """{"objective":"ship it","criteria":[{"text":"tests pass"}],"steps":["wire it"]}""",
+            pipeline.Session.CreateContext(null, null));
+
+        Assert.Contains("Goal recorded", recorded.Text);
+
+        // 第二轮：状态应作为系统提示段落注入。
+        vm.InputText = "继续";
+        await vm.SendAsync();
+
+        var second = _client.Requests[^1];
+        Assert.Contains("## Session goal", second.SystemPrompt);
+        Assert.Contains("tests pass", second.SystemPrompt);
+        Assert.Contains("0/1 steps", second.SystemPrompt);
+    }
+
+    [Fact]
+    public async Task PlanCommand_TracksApprovalAndSteps()
+    {
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+
+        vm.InputText = "/plan refactor sessions";
+        await vm.SendAsync();
+
+        var pipeline = vm.Pipeline!;
+        var context = pipeline.Session.CreateContext(null, null);
+
+        var saved = await pipeline.Runtime.ExecuteToolAsync(
+            PlanExtension.SaveToolName,
+            """{"task":"refactor sessions","steps":[{"title":"extract store","files":["A.cs"],"verify":"dotnet test"}]}""",
+            context);
+        Assert.Contains("Plan recorded", saved.Text);
+
+        // 未确认时应提示不得开工。
+        await pipeline.Runtime.ExecuteToolAsync(PlanExtension.StepToolName, """{"completeStep":0}""", context);
+        vm.InputText = "继续";
+        await vm.SendAsync();
+
+        var second = _client.Requests[^1];
+        Assert.Contains("## Implementation plan", second.SystemPrompt);
+        Assert.Contains("NOT approved", second.SystemPrompt);
+        Assert.Contains("[x] 0. extract store", second.SystemPrompt);
+
+        // 确认后改为允许实施。
+        await pipeline.Runtime.ExecuteToolAsync(PlanExtension.StepToolName, """{"approve":true}""", context);
+        vm.InputText = "继续";
+        await vm.SendAsync();
+
+        var third = _client.Requests[^1];
+        Assert.Contains("approved this plan", third.SystemPrompt);
+    }
+
+    [Fact]
+    public async Task ExtensionState_SurvivesSaveAndRestore()
+    {
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+        vm.InputText = "/goal persist me";
+        await vm.SendAsync();
+
+        var pipeline = vm.Pipeline!;
+        await pipeline.Runtime.ExecuteToolAsync(
+            GoalExtension.PlanToolName,
+            """{"objective":"persist me","criteria":[{"text":"restored"}],"steps":["a"]}""",
+            pipeline.Session.CreateContext(null, null));
+
+        // 强制持久化，再从存储里恢复。
+        vm.InputText = "继续";
+        await vm.SendAsync();
+        var record = await AiToolsWpf.ConversationStore.LoadAsync(vm.CurrentConversationId!);
+        Assert.NotNull(record);
+        Assert.False(string.IsNullOrWhiteSpace(record!.ExtensionState));
+
+        pipeline.Runtime.State.ClearAll();
+        pipeline.ImportState(record.ExtensionState);
+        var restored = pipeline.Runtime.State.Get<GoalExtensionStateProbe>(GoalExtension.ExtensionId, "current");
+        Assert.NotNull(restored);
+        Assert.Equal("persist me", restored!.Objective);
     }
 
     [Fact]
@@ -178,8 +282,8 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         var last = _client.Requests[^1];
         var userMessage = last.Messages[last.Messages.Count - 1];
         Assert.Equal(ChatRole.User, userMessage.Role);
-        Assert.Contains("Objective: keep it", userMessage.GetText());
-        Assert.DoesNotContain("/goal keep it", userMessage.GetText());
+        Assert.Contains("keep it", userMessage.GetText());
+        Assert.DoesNotContain("/goal", userMessage.GetText());
     }
 
     [Fact]
@@ -193,6 +297,12 @@ public sealed class ChatViewModelExtensionTests : IDisposable
 
         Assert.Empty(_client.Requests);
         Assert.Contains(vm.Messages, message => !message.IsUser && message.Text.Contains("/goal"));
+    }
+
+    /// <summary>用于断言恢复结果的最小状态投影。</summary>
+    private sealed class GoalExtensionStateProbe
+    {
+        public string Objective { get; set; } = string.Empty;
     }
 
     private static async Task WaitForAsync(Func<bool> condition, int timeoutMs = 3000)

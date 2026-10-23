@@ -234,7 +234,7 @@ public sealed class CommandTemplateRendererTests
             ShellExecutor = _ => throw new InvalidOperationException("exit 1")
         };
 
-        var ex = Assert.Throws<ExtensionCommandException>(() =>
+        var ex = Assert.Throws<CommandExecutionException>(() =>
             CommandTemplateRenderer.Render(command.Body, command, context));
         Assert.Contains("false", ex.Message);
     }
@@ -397,7 +397,7 @@ public sealed class PluginLoaderTests
         var plugin = PluginLoader.Load(Path.Combine(tree.Root, "broken"));
 
         Assert.Empty(plugin.Commands);
-        Assert.Contains(plugin.Diagnostics, item => item.Kind == ExtensionDiagnosticKind.Error);
+        Assert.Contains(plugin.Diagnostics, item => item.Kind == PluginDiagnosticKind.Error);
     }
 
     [Fact]
@@ -470,11 +470,11 @@ public sealed class PluginLoaderTests
         var plugin = PluginLoader.Load(Path.Combine(Path.GetTempPath(), "aitools-missing-" + Guid.NewGuid().ToString("N")));
 
         Assert.Empty(plugin.Commands);
-        Assert.Contains(plugin.Diagnostics, item => item.Kind == ExtensionDiagnosticKind.Error);
+        Assert.Contains(plugin.Diagnostics, item => item.Kind == PluginDiagnosticKind.Error);
     }
 }
 
-public sealed class ExtensionCatalogTests
+public sealed class PluginCatalogTests
 {
     [Fact]
     public void LoadFromDirectory_DiscoversSiblingPlugins()
@@ -483,7 +483,7 @@ public sealed class ExtensionCatalogTests
         tree.CreateCommandPlugin("alpha", ("one", "One."));
         tree.CreateCommandPlugin("beta", ("two", "Two."));
 
-        var catalog = ExtensionCatalog.LoadFromDirectory(tree.Root);
+        var catalog = PluginCatalog.LoadFromDirectory(tree.Root);
 
         Assert.Equal(2, catalog.Count);
         Assert.Equal(new[] { "alpha", "beta" }, catalog.Plugins.Select(item => item.Name));
@@ -497,7 +497,7 @@ public sealed class ExtensionCatalogTests
         tree.CreateCommandPlugin("alpha", ("one", "One."));
         tree.CreateCommandPlugin("beta", ("two", "Two."));
 
-        var catalog = ExtensionCatalog.LoadFromDirectory(tree.Root, new ExtensionCatalogOptions
+        var catalog = PluginCatalog.LoadFromDirectory(tree.Root, new PluginCatalogOptions
         {
             DisabledPlugins = new[] { "beta" }
         });
@@ -512,7 +512,7 @@ public sealed class ExtensionCatalogTests
         tree.CreateCommandPlugin("alpha", ("go", "Alpha go."));
         tree.CreateCommandPlugin("beta", ("go", "Beta go."));
 
-        var catalog = ExtensionCatalog.LoadFromDirectory(tree.Root);
+        var catalog = PluginCatalog.LoadFromDirectory(tree.Root);
 
         Assert.True(catalog.TryResolveCommand("beta:go", out var qualified));
         Assert.Equal("beta:go", qualified!.Name);
@@ -530,7 +530,7 @@ public sealed class ExtensionCatalogTests
         using var tree = new TempPluginTree();
         tree.CreateCommandPlugin("alpha", ("goal", "Goal."));
 
-        var catalog = ExtensionCatalog.LoadFromDirectory(tree.Root);
+        var catalog = PluginCatalog.LoadFromDirectory(tree.Root);
 
         Assert.True(catalog.TryResolveCommand("goal", out var command));
         Assert.Equal("alpha:goal", command!.Name);
@@ -543,19 +543,19 @@ public sealed class ExtensionCatalogTests
         tree.Write(Path.Combine("skillsy", ".claude-plugin", "plugin.json"), """{"name":"skillsy"}""");
         tree.Write(Path.Combine("skillsy", "skills", "deploy", "SKILL.md"), "---\ndescription: Deploy it.\n---\nBody");
 
-        var catalog = ExtensionCatalog.LoadFromDirectory(tree.Root);
+        var catalog = PluginCatalog.LoadFromDirectory(tree.Root);
         var skills = catalog.ToSkillCatalog();
 
         Assert.Equal("deploy", Assert.Single(skills.Skills).Name);
     }
 }
 
-public sealed class ExtensionHostTests
+public sealed class PluginHostTests
 {
-    private static ExtensionHost CreateHost(TempPluginTree tree)
+    private static PluginHost CreateHost(TempPluginTree tree)
     {
-        var catalog = ExtensionCatalog.LoadFromDirectory(tree.Root);
-        return new ExtensionHost(catalog, new ExtensionHostOptions
+        var catalog = PluginCatalog.LoadFromDirectory(tree.Root);
+        return new PluginHost(catalog, new PluginHostOptions
         {
             EnableShellExecution = false,
             ProjectDirectory = tree.Root
@@ -565,22 +565,22 @@ public sealed class ExtensionHostTests
     [Fact]
     public void LooksLikeCommand_DistinguishesPathsFromCommands()
     {
-        Assert.True(ExtensionHost.LooksLikeCommand("/goal ship it"));
-        Assert.True(ExtensionHost.LooksLikeCommand("  /plan"));
-        Assert.False(ExtensionHost.LooksLikeCommand("/usr/bin/env"));
-        Assert.False(ExtensionHost.LooksLikeCommand("hello /goal"));
-        Assert.False(ExtensionHost.LooksLikeCommand("/"));
-        Assert.False(ExtensionHost.LooksLikeCommand(null));
+        Assert.True(PluginHost.LooksLikeCommand("/goal ship it"));
+        Assert.True(PluginHost.LooksLikeCommand("  /plan"));
+        Assert.False(PluginHost.LooksLikeCommand("/usr/bin/env"));
+        Assert.False(PluginHost.LooksLikeCommand("hello /goal"));
+        Assert.False(PluginHost.LooksLikeCommand("/"));
+        Assert.False(PluginHost.LooksLikeCommand(null));
     }
 
     [Fact]
     public void SplitCommand_SeparatesNameAndArguments()
     {
-        var (name, arguments) = ExtensionHost.SplitCommand("/goal make it fast");
+        var (name, arguments) = PluginHost.SplitCommand("/goal make it fast");
         Assert.Equal("goal", name);
         Assert.Equal("make it fast", arguments);
 
-        var (bare, empty) = ExtensionHost.SplitCommand("/plan");
+        var (bare, empty) = PluginHost.SplitCommand("/plan");
         Assert.Equal("plan", bare);
         Assert.Equal(string.Empty, empty);
     }

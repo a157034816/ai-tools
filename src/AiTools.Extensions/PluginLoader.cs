@@ -45,13 +45,13 @@ public static class PluginLoader
         }
 
         var root = Path.GetFullPath(directory);
-        var diagnostics = new List<ExtensionDiagnostic>();
+        var diagnostics = new List<PluginDiagnostic>();
 
         if (!Directory.Exists(root))
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Error,
+                Kind = PluginDiagnosticKind.Error,
                 Path = root,
                 Message = "The plugin directory does not exist."
             });
@@ -68,9 +68,9 @@ public static class PluginLoader
         else
         {
             manifestPath = null;
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Info,
+                Kind = PluginDiagnosticKind.Info,
                 Path = root,
                 Message = "No .claude-plugin/plugin.json found; loading by directory convention."
             });
@@ -79,9 +79,9 @@ public static class PluginLoader
         var pluginName = SanitizePluginName(manifest?.Name ?? new DirectoryInfo(root).Name);
         if (!NamePattern.IsMatch(pluginName))
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = manifestPath ?? root,
                 Message = "Plugin names should be kebab-case (lowercase letters, digits and single hyphens)."
@@ -92,9 +92,9 @@ public static class PluginLoader
         {
             foreach (var unsupported in manifest.UnsupportedComponents.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(key => key, StringComparer.Ordinal))
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Info,
+                    Kind = PluginDiagnosticKind.Info,
                     PluginName = pluginName,
                     Path = manifestPath,
                     Message = $"Component '{unsupported}' is not supported by AiTools and was ignored."
@@ -179,7 +179,7 @@ public static class PluginLoader
         string root,
         string? manifestPath,
         PluginManifest? manifest,
-        List<ExtensionDiagnostic> diagnostics,
+        List<PluginDiagnostic> diagnostics,
         IReadOnlyList<PluginCommand> commands,
         IReadOnlyList<PluginSkill> skills,
         IReadOnlyList<PluginMcpServer> mcpServers,
@@ -212,7 +212,7 @@ public static class PluginLoader
         string root,
         string pluginName,
         PluginManifest? manifest,
-        List<ExtensionDiagnostic> diagnostics)
+        List<PluginDiagnostic> diagnostics)
     {
         var skills = new List<PluginSkill>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -239,9 +239,9 @@ public static class PluginLoader
                 var resolved = ResolvePath(root, declared);
                 if (resolved == null)
                 {
-                    diagnostics.Add(new ExtensionDiagnostic
+                    diagnostics.Add(new PluginDiagnostic
                     {
-                        Kind = ExtensionDiagnosticKind.Warning,
+                        Kind = PluginDiagnosticKind.Warning,
                         PluginName = pluginName,
                         Path = declared,
                         Message = "Skill path is outside the plugin directory and was ignored."
@@ -251,9 +251,9 @@ public static class PluginLoader
 
                 if (!Directory.Exists(resolved) && !File.Exists(resolved))
                 {
-                    diagnostics.Add(new ExtensionDiagnostic
+                    diagnostics.Add(new PluginDiagnostic
                     {
-                        Kind = ExtensionDiagnosticKind.Warning,
+                        Kind = PluginDiagnosticKind.Warning,
                         PluginName = pluginName,
                         Path = resolved,
                         Message = "Skill path does not exist."
@@ -296,9 +296,9 @@ public static class PluginLoader
 
                 if (!seen.Add(skill.Name))
                 {
-                    diagnostics.Add(new ExtensionDiagnostic
+                    diagnostics.Add(new PluginDiagnostic
                     {
-                        Kind = ExtensionDiagnosticKind.Warning,
+                        Kind = PluginDiagnosticKind.Warning,
                         PluginName = pluginName,
                         Path = skillFile,
                         Message = $"Duplicate skill name '{skill.Name}'. The first definition wins."
@@ -332,7 +332,7 @@ public static class PluginLoader
         string skillFile,
         string pluginRoot,
         string pluginName,
-        List<ExtensionDiagnostic> diagnostics,
+        List<PluginDiagnostic> diagnostics,
         bool isPluginRootSkill)
     {
         string content;
@@ -342,9 +342,9 @@ public static class PluginLoader
         }
         catch (Exception ex)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = skillFile,
                 Message = "Failed to read SKILL.md: " + ex.Message
@@ -355,9 +355,9 @@ public static class PluginLoader
         var parsed = SkillFrontmatter.TryParse(content, out var frontmatter, out var error);
         if (!parsed)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = skillFile,
                 Message = (error ?? "Invalid frontmatter.") + " The whole file is treated as instructions."
@@ -369,9 +369,9 @@ public static class PluginLoader
         var name = SanitizeCommandSegment(frontmatter?.GetString("name") ?? fallbackName);
         if (name.Length == 0)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = skillFile,
                 Message = "Skill has no usable name and was skipped."
@@ -383,9 +383,9 @@ public static class PluginLoader
         var description = FrontmatterHelper.Describe(frontmatter?.GetString("description"), body);
         if (description.Length == 0)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = skillFile,
                 Message = "Skill has no description; the model will not know when to use it."
@@ -466,7 +466,7 @@ public static class PluginLoader
         string pluginName,
         PluginManifest? manifest,
         IReadOnlyList<PluginSkill> skills,
-        List<ExtensionDiagnostic> diagnostics)
+        List<PluginDiagnostic> diagnostics)
     {
         var commands = new List<PluginCommand>();
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -492,9 +492,9 @@ public static class PluginLoader
                 var resolved = ResolvePath(root, declared);
                 if (resolved == null)
                 {
-                    diagnostics.Add(new ExtensionDiagnostic
+                    diagnostics.Add(new PluginDiagnostic
                     {
-                        Kind = ExtensionDiagnosticKind.Warning,
+                        Kind = PluginDiagnosticKind.Warning,
                         PluginName = pluginName,
                         Path = declared,
                         Message = "Command path is outside the plugin directory and was ignored."
@@ -539,9 +539,9 @@ public static class PluginLoader
                     continue;
                 }
 
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Warning,
+                    Kind = PluginDiagnosticKind.Warning,
                     PluginName = pluginName,
                     Path = resolved,
                     Message = "Command path does not exist."
@@ -566,9 +566,9 @@ public static class PluginLoader
                     var resolved = ResolvePath(root, entry.Source);
                     if (resolved == null || !File.Exists(resolved))
                     {
-                        diagnostics.Add(new ExtensionDiagnostic
+                        diagnostics.Add(new PluginDiagnostic
                         {
-                            Kind = ExtensionDiagnosticKind.Warning,
+                            Kind = PluginDiagnosticKind.Warning,
                             PluginName = pluginName,
                             Path = entry.Source,
                             Message = $"Inline command '{entry.Name}' points at a missing file."
@@ -583,9 +583,9 @@ public static class PluginLoader
                     }
                     catch (Exception ex)
                     {
-                        diagnostics.Add(new ExtensionDiagnostic
+                        diagnostics.Add(new PluginDiagnostic
                         {
-                            Kind = ExtensionDiagnosticKind.Warning,
+                            Kind = PluginDiagnosticKind.Warning,
                             PluginName = pluginName,
                             Path = resolved,
                             Message = "Failed to read command file: " + ex.Message
@@ -625,7 +625,7 @@ public static class PluginLoader
         string shortName,
         string pluginRoot,
         string pluginName,
-        List<ExtensionDiagnostic> diagnostics)
+        List<PluginDiagnostic> diagnostics)
     {
         string content;
         try
@@ -634,9 +634,9 @@ public static class PluginLoader
         }
         catch (Exception ex)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = filePath,
                 Message = "Failed to read the command file: " + ex.Message
@@ -647,9 +647,9 @@ public static class PluginLoader
         var normalized = shortName.Trim(':').Trim();
         if (normalized.Length == 0)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = filePath,
                 Message = "Command has an empty name and was skipped."
@@ -669,9 +669,9 @@ public static class PluginLoader
             }
             else
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Warning,
+                    Kind = PluginDiagnosticKind.Warning,
                     PluginName = pluginName,
                     Path = filePath,
                     Message = (error ?? "Invalid frontmatter.") + " The whole file is treated as the command body."
@@ -704,7 +704,7 @@ public static class PluginLoader
         string root,
         string pluginName,
         PluginManifest? manifest,
-        List<ExtensionDiagnostic> diagnostics)
+        List<PluginDiagnostic> diagnostics)
     {
         var servers = new List<PluginMcpServer>();
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -713,9 +713,9 @@ public static class PluginLoader
         {
             if (map.ValueKind != JsonValueKind.Object)
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Warning,
+                    Kind = PluginDiagnosticKind.Warning,
                     PluginName = pluginName,
                     Path = source,
                     Message = "MCP configuration must be a JSON object."
@@ -767,9 +767,9 @@ public static class PluginLoader
                 var resolved = ResolvePath(root, declared);
                 if (resolved == null || !File.Exists(resolved))
                 {
-                    diagnostics.Add(new ExtensionDiagnostic
+                    diagnostics.Add(new PluginDiagnostic
                     {
-                        Kind = ExtensionDiagnosticKind.Warning,
+                        Kind = PluginDiagnosticKind.Warning,
                         PluginName = pluginName,
                         Path = declared,
                         Message = "MCP server config file was not found."
@@ -800,13 +800,13 @@ public static class PluginLoader
         string root,
         string pluginName,
         string? source,
-        List<ExtensionDiagnostic> diagnostics)
+        List<PluginDiagnostic> diagnostics)
     {
         if (element.ValueKind != JsonValueKind.Object)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = source,
                 Message = $"MCP server '{name}' must be an object."
@@ -854,9 +854,9 @@ public static class PluginLoader
         Uri? endpoint = null;
         if (url != null && !Uri.TryCreate(Expand(url, root), UriKind.Absolute, out endpoint))
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = source,
                 Message = $"MCP server '{name}' has an invalid URL '{url}'."
@@ -866,9 +866,9 @@ public static class PluginLoader
 
         if (transport == PluginMcpTransportKind.Stdio && string.IsNullOrWhiteSpace(command))
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = source,
                 Message = $"MCP server '{name}' is missing 'command' and was skipped."
@@ -878,9 +878,9 @@ public static class PluginLoader
 
         if (transport != PluginMcpTransportKind.Stdio && endpoint == null)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = source,
                 Message = $"MCP server '{name}' is missing 'url' and was skipped."
@@ -922,7 +922,7 @@ public static class PluginLoader
         return result;
     }
 
-    private static JsonElement? TryReadJson(string path, string pluginName, List<ExtensionDiagnostic> diagnostics)
+    private static JsonElement? TryReadJson(string path, string pluginName, List<PluginDiagnostic> diagnostics)
     {
         try
         {
@@ -935,9 +935,9 @@ public static class PluginLoader
         }
         catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 PluginName = pluginName,
                 Path = path,
                 Message = "Failed to read MCP configuration: " + ex.Message

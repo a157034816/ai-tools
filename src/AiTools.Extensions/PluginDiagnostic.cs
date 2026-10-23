@@ -3,7 +3,7 @@ using System;
 namespace AiTools.Extensions;
 
 /// <summary>发现或加载插件时遇到的问题的严重级别。</summary>
-public enum ExtensionDiagnosticKind
+public enum PluginDiagnosticKind
 {
     /// <summary>信息，例如某个组件被有意忽略。</summary>
     Info,
@@ -16,10 +16,10 @@ public enum ExtensionDiagnosticKind
 }
 
 /// <summary>插件发现/加载过程中产生的一条诊断。加载过程永不抛出异常。</summary>
-public sealed class ExtensionDiagnostic
+public sealed class PluginDiagnostic
 {
     /// <summary>获取诊断的严重级别。</summary>
-    public ExtensionDiagnosticKind Kind { get; init; }
+    public PluginDiagnosticKind Kind { get; init; }
 
     /// <summary>获取相关插件的名称；加载单个插件失败前可能为空。</summary>
     public string? PluginName { get; init; }
@@ -40,16 +40,16 @@ public sealed class ExtensionDiagnostic
 }
 
 /// <summary>执行插件命令时无法继续（例如 shell 注入失败）所抛出的异常。</summary>
-public sealed class ExtensionCommandException : Exception
+public sealed class CommandExecutionException : Exception
 {
     /// <summary>使用消息文本创建异常。</summary>
-    public ExtensionCommandException(string message)
+    public CommandExecutionException(string message)
         : base(message)
     {
     }
 
     /// <summary>使用消息文本和内部异常创建异常。</summary>
-    public ExtensionCommandException(string message, Exception? innerException)
+    public CommandExecutionException(string message, Exception? innerException)
         : base(message, innerException)
     {
     }

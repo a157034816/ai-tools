@@ -9,8 +9,8 @@ using AiTools.Mcp;
 
 namespace AiTools.Extensions;
 
-/// <summary>控制 <see cref="ExtensionHost"/> 行为的选项。</summary>
-public sealed class ExtensionHostOptions
+/// <summary>控制 <see cref="PluginHost"/> 行为的选项。</summary>
+public sealed class PluginHostOptions
 {
     /// <summary>获取或设置项目根目录（<c>${CLAUDE_PROJECT_DIR}</c>）。默认为进程当前目录。</summary>
     public string? ProjectDirectory { get; set; }
@@ -51,26 +51,26 @@ public sealed class SlashCommandInvocation
 /// <remarks>
 /// 该类型不依赖任何 UI 框架，可在控制台、WPF 或服务端复用。
 /// </remarks>
-public sealed class ExtensionHost
+public sealed class PluginHost
 {
     private readonly Dictionary<string, McpClient> _mcpClients = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _mcpGate = new();
-    private readonly ExtensionHostOptions _options;
+    private readonly PluginHostOptions _options;
 
     /// <summary>使用给定目录与选项创建宿主。</summary>
     /// <param name="catalog">已加载的插件。</param>
     /// <param name="options">宿主选项。</param>
-    public ExtensionHost(ExtensionCatalog catalog, ExtensionHostOptions? options = null)
+    public PluginHost(PluginCatalog catalog, PluginHostOptions? options = null)
     {
         Catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
-        _options = options ?? new ExtensionHostOptions();
+        _options = options ?? new PluginHostOptions();
     }
 
     /// <summary>获取已加载的插件集合。</summary>
-    public ExtensionCatalog Catalog { get; }
+    public PluginCatalog Catalog { get; }
 
     /// <summary>获取宿主选项。</summary>
-    public ExtensionHostOptions Options => _options;
+    public PluginHostOptions Options => _options;
 
     /// <summary>判断输入是否是斜杠命令（以 <c>/</c> 开头且不是纯路径）。</summary>
     public static bool LooksLikeCommand(string? text)
@@ -133,7 +133,7 @@ public sealed class ExtensionHost
     /// <param name="command">命令。</param>
     /// <param name="arguments">参数。</param>
     /// <param name="sessionId">会话标识，用于 <c>${CLAUDE_SESSION_ID}</c>。</param>
-    /// <exception cref="ExtensionCommandException">动态上下文注入命令失败。</exception>
+    /// <exception cref="CommandExecutionException">动态上下文注入命令失败。</exception>
     public SlashCommandInvocation Render(PluginCommand command, CommandArguments arguments, string? sessionId = null)
     {
         if (command == null)

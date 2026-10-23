@@ -99,6 +99,12 @@ public sealed class ConversationRecord
     /// <summary>获取或设置按时间顺序排列的消息。</summary>
     public List<ConversationMessage> Messages { get; set; } = new();
 
+    /// <summary>
+    /// 获取或设置扩展的会话状态（JSON 文本，按扩展名分桶）。该状态不进入模型上下文，
+    /// 只用于恢复 /goal、/plan 这类跨轮次的簿记。
+    /// </summary>
+    public string? ExtensionState { get; set; }
+
     /// <summary>创建供选择器使用的摘要。</summary>
     public ConversationSummary ToSummary() => new()
     {
@@ -127,6 +133,7 @@ public sealed class ConversationRecord
             ParentId = Id,
             ProviderId = ProviderId,
             ModelId = ModelId,
+            ExtensionState = ExtensionState,
             Messages = Messages.ConvertAll(message => new ConversationMessage
             {
                 Role = message.Role,

@@ -48,7 +48,7 @@ internal sealed class PluginManifest
     public List<string> UnsupportedComponents { get; } = new();
 
     /// <summary>解析过程中发现的问题。</summary>
-    public List<ExtensionDiagnostic> Diagnostics { get; } = new();
+    public List<PluginDiagnostic> Diagnostics { get; } = new();
 
     public static PluginManifest Load(string manifestPath)
     {
@@ -60,9 +60,9 @@ internal sealed class PluginManifest
         }
         catch (Exception ex)
         {
-            manifest.Diagnostics.Add(new ExtensionDiagnostic
+            manifest.Diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Error,
+                Kind = PluginDiagnosticKind.Error,
                 Path = manifestPath,
                 Message = "Failed to read the plugin manifest: " + ex.Message
             });
@@ -80,9 +80,9 @@ internal sealed class PluginManifest
         }
         catch (JsonException ex)
         {
-            manifest.Diagnostics.Add(new ExtensionDiagnostic
+            manifest.Diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Error,
+                Kind = PluginDiagnosticKind.Error,
                 Path = manifestPath,
                 Message = "Invalid JSON in the plugin manifest: " + ex.Message
             });
@@ -94,9 +94,9 @@ internal sealed class PluginManifest
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
-                manifest.Diagnostics.Add(new ExtensionDiagnostic
+                manifest.Diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Error,
+                    Kind = PluginDiagnosticKind.Error,
                     Path = manifestPath,
                     Message = "The plugin manifest must be a JSON object."
                 });
@@ -189,9 +189,9 @@ internal sealed class PluginManifest
                 {
                     if (property.Value.ValueKind != JsonValueKind.Object)
                     {
-                        manifest.Diagnostics.Add(new ExtensionDiagnostic
+                        manifest.Diagnostics.Add(new PluginDiagnostic
                         {
-                            Kind = ExtensionDiagnosticKind.Warning,
+                            Kind = PluginDiagnosticKind.Warning,
                             Path = manifestPath,
                             Message = $"Command '{property.Name}' must be an object with 'source' or 'content'."
                         });
@@ -202,9 +202,9 @@ internal sealed class PluginManifest
                     var content = ReadString(property.Value, "content");
                     if ((source == null) == (content == null))
                     {
-                        manifest.Diagnostics.Add(new ExtensionDiagnostic
+                        manifest.Diagnostics.Add(new PluginDiagnostic
                         {
-                            Kind = ExtensionDiagnosticKind.Warning,
+                            Kind = PluginDiagnosticKind.Warning,
                             Path = manifestPath,
                             Message = $"Command '{property.Name}' must set exactly one of 'source' or 'content'."
                         });
@@ -261,9 +261,9 @@ internal sealed class PluginManifest
                     }
                     else
                     {
-                        manifest.Diagnostics.Add(new ExtensionDiagnostic
+                        manifest.Diagnostics.Add(new PluginDiagnostic
                         {
-                            Kind = ExtensionDiagnosticKind.Warning,
+                            Kind = PluginDiagnosticKind.Warning,
                             Path = manifestPath,
                             Message = "Unsupported mcpServers entry: expected a path or an inline server object."
                         });
@@ -294,9 +294,9 @@ internal sealed class PluginManifest
 
         if (element.ValueKind != JsonValueKind.Array)
         {
-            manifest.Diagnostics.Add(new ExtensionDiagnostic
+            manifest.Diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Warning,
+                Kind = PluginDiagnosticKind.Warning,
                 Message = $"'{property}' must be a path or an array of paths."
             });
             return;

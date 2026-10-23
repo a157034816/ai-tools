@@ -118,7 +118,7 @@ public enum PluginMcpTransportKind
     Sse
 }
 
-/// <summary>插件声明的 MCP 服务。连接由 <see cref="ExtensionHost.ConnectMcpServerAsync"/> 建立。</summary>
+/// <summary>插件声明的 MCP 服务。连接由 <see cref="PluginHost.ConnectMcpServerAsync"/> 建立。</summary>
 public sealed class PluginMcpServer
 {
     /// <summary>获取服务器在插件内的名称。</summary>

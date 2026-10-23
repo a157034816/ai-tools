@@ -7,7 +7,7 @@ using AiTools.Skills;
 namespace AiTools.Extensions;
 
 /// <summary>控制插件发现行为的选项。</summary>
-public sealed class ExtensionCatalogOptions
+public sealed class PluginCatalogOptions
 {
     /// <summary>获取或设置是否递归搜索子目录中的插件根。默认 true。</summary>
     public bool Recursive { get; set; } = true;
@@ -27,14 +27,14 @@ public sealed class ExtensionCatalogOptions
 
 /// <summary>
 /// 已加载插件的不可变集合，按名称索引。通过
-/// <see cref="LoadFromDirectory(string, ExtensionCatalogOptions?)"/> 或
+/// <see cref="LoadFromDirectory(string, PluginCatalogOptions?)"/> 或
 /// <see cref="FromPlugins(IEnumerable{AiToolsPlugin})"/> 构建。
 /// </summary>
-public sealed class ExtensionCatalog
+public sealed class PluginCatalog
 {
     private readonly Dictionary<string, AiToolsPlugin> _plugins;
 
-    private ExtensionCatalog(IReadOnlyList<AiToolsPlugin> plugins, IReadOnlyList<ExtensionDiagnostic> diagnostics)
+    private PluginCatalog(IReadOnlyList<AiToolsPlugin> plugins, IReadOnlyList<PluginDiagnostic> diagnostics)
     {
         Plugins = plugins;
         Diagnostics = diagnostics;
@@ -48,7 +48,7 @@ public sealed class ExtensionCatalog
     public int Count => Plugins.Count;
 
     /// <summary>获取发现/加载过程中遇到的问题。</summary>
-    public IReadOnlyList<ExtensionDiagnostic> Diagnostics { get; }
+    public IReadOnlyList<PluginDiagnostic> Diagnostics { get; }
 
     /// <summary>获取所有插件提供的命令，按限定名排序。</summary>
     public IReadOnlyList<PluginCommand> Commands => Plugins
@@ -145,7 +145,7 @@ public sealed class ExtensionCatalog
     }
 
     /// <summary>从预先构建的插件集合创建目录。</summary>
-    public static ExtensionCatalog FromPlugins(IEnumerable<AiToolsPlugin> plugins)
+    public static PluginCatalog FromPlugins(IEnumerable<AiToolsPlugin> plugins)
     {
         if (plugins == null)
         {
@@ -159,7 +159,7 @@ public sealed class ExtensionCatalog
             .OrderBy(plugin => plugin.Name, StringComparer.Ordinal)
             .ToArray();
 
-        return new ExtensionCatalog(ordered, Array.Empty<ExtensionDiagnostic>());
+        return new PluginCatalog(ordered, Array.Empty<PluginDiagnostic>());
     }
 
     /// <summary>
@@ -169,15 +169,15 @@ public sealed class ExtensionCatalog
     /// </summary>
     /// <param name="rootPath">插件根目录或多个插件的父目录。</param>
     /// <param name="options">发现选项。</param>
-    public static ExtensionCatalog LoadFromDirectory(string rootPath, ExtensionCatalogOptions? options = null)
+    public static PluginCatalog LoadFromDirectory(string rootPath, PluginCatalogOptions? options = null)
     {
         if (string.IsNullOrWhiteSpace(rootPath))
         {
             throw new ArgumentException("A plugins directory is required.", nameof(rootPath));
         }
 
-        options ??= new ExtensionCatalogOptions();
-        var diagnostics = new List<ExtensionDiagnostic>();
+        options ??= new PluginCatalogOptions();
+        var diagnostics = new List<PluginDiagnostic>();
         var plugins = new List<AiToolsPlugin>();
         var fullRoot = Path.GetFullPath(rootPath);
         var seenRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -196,9 +196,9 @@ public sealed class ExtensionCatalog
             if (options.DisabledPlugins != null &&
                 options.DisabledPlugins.Any(name => string.Equals(name, plugin.Name, StringComparison.OrdinalIgnoreCase)))
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Info,
+                    Kind = PluginDiagnosticKind.Info,
                     PluginName = plugin.Name,
                     Path = full,
                     Message = "Plugin is disabled and was not loaded."
@@ -210,9 +210,9 @@ public sealed class ExtensionCatalog
                 options.EnabledPlugins.Count > 0 &&
                 !options.EnabledPlugins.Any(name => string.Equals(name, plugin.Name, StringComparison.OrdinalIgnoreCase)))
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Info,
+                    Kind = PluginDiagnosticKind.Info,
                     PluginName = plugin.Name,
                     Path = full,
                     Message = "Plugin is not in the enabled list and was not loaded."
@@ -220,7 +220,7 @@ public sealed class ExtensionCatalog
                 return;
             }
 
-            var error = plugin.Diagnostics.FirstOrDefault(item => item.Kind == ExtensionDiagnosticKind.Error);
+            var error = plugin.Diagnostics.FirstOrDefault(item => item.Kind == PluginDiagnosticKind.Error);
             if (error != null)
             {
                 return;
@@ -228,9 +228,9 @@ public sealed class ExtensionCatalog
 
             if (plugin.Commands.Count == 0 && plugin.Skills.Count == 0 && plugin.McpServers.Count == 0)
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Warning,
+                    Kind = PluginDiagnosticKind.Warning,
                     PluginName = plugin.Name,
                     Path = full,
                     Message = "Plugin declares no supported components (commands, skills or MCP servers)."
@@ -255,9 +255,9 @@ public sealed class ExtensionCatalog
             }
             catch (Exception ex)
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Warning,
+                    Kind = PluginDiagnosticKind.Warning,
                     Path = directory,
                     Message = "Failed to enumerate directories: " + ex.Message
                 });
@@ -307,9 +307,9 @@ public sealed class ExtensionCatalog
             }
             else
             {
-                diagnostics.Add(new ExtensionDiagnostic
+                diagnostics.Add(new PluginDiagnostic
                 {
-                    Kind = ExtensionDiagnosticKind.Warning,
+                    Kind = PluginDiagnosticKind.Warning,
                     Path = fullRoot,
                     Message = "The plugins directory does not exist."
                 });
@@ -326,9 +326,9 @@ public sealed class ExtensionCatalog
 
                     if (!Directory.Exists(additional))
                     {
-                        diagnostics.Add(new ExtensionDiagnostic
+                        diagnostics.Add(new PluginDiagnostic
                         {
-                            Kind = ExtensionDiagnosticKind.Warning,
+                            Kind = PluginDiagnosticKind.Warning,
                             Path = additional,
                             Message = "Additional plugin directory does not exist."
                         });
@@ -348,9 +348,9 @@ public sealed class ExtensionCatalog
         }
         catch (Exception ex)
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Error,
+                Kind = PluginDiagnosticKind.Error,
                 Path = fullRoot,
                 Message = "Failed to discover plugins: " + ex.Message
             });
@@ -363,9 +363,9 @@ public sealed class ExtensionCatalog
                 var items = group.ToArray();
                 if (items.Length > 1)
                 {
-                    diagnostics.Add(new ExtensionDiagnostic
+                    diagnostics.Add(new PluginDiagnostic
                     {
-                        Kind = ExtensionDiagnosticKind.Warning,
+                        Kind = PluginDiagnosticKind.Warning,
                         PluginName = group.Key,
                         Message = "Duplicate plugin name discovered; the last loaded copy wins."
                     });
@@ -376,13 +376,13 @@ public sealed class ExtensionCatalog
             .OrderBy(plugin => plugin.Name, StringComparer.Ordinal)
             .ToList();
 
-        var catalog = new ExtensionCatalog(ordered, diagnostics);
+        var catalog = new PluginCatalog(ordered, diagnostics);
 
         foreach (var conflict in catalog.GetShortNameConflicts())
         {
-            diagnostics.Add(new ExtensionDiagnostic
+            diagnostics.Add(new PluginDiagnostic
             {
-                Kind = ExtensionDiagnosticKind.Info,
+                Kind = PluginDiagnosticKind.Info,
                 Path = string.Join(", ", conflict.Value.Select(item => "/" + item.Name)),
                 Message = $"Short command name '{conflict.Key}' is ambiguous; use the qualified /plugin:name form."
             });

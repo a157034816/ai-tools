@@ -72,7 +72,7 @@ public static class CommandTemplateRenderer
     /// <param name="template">命令正文。</param>
     /// <param name="command">命令定义（提供插件根目录、skill 目录与参数名）。</param>
     /// <param name="context">渲染上下文。</param>
-    /// <exception cref="ExtensionCommandException">动态上下文注入命令失败。</exception>
+    /// <exception cref="CommandExecutionException">动态上下文注入命令失败。</exception>
     public static CommandRenderResult RenderResult(string template, PluginCommand command, CommandRenderContext context)
     {
         if (template == null)
@@ -138,13 +138,13 @@ public static class CommandTemplateRenderer
                 var output = context.ShellExecutor!(command);
                 return (output ?? string.Empty).TrimEnd('\r', '\n');
             }
-            catch (ExtensionCommandException)
+            catch (CommandExecutionException)
             {
                 throw;
             }
             catch (Exception ex)
             {
-                throw new ExtensionCommandException($"Shell command failed for pattern \"{command}\": {ex.Message}", ex);
+                throw new CommandExecutionException($"Shell command failed for pattern \"{command}\": {ex.Message}", ex);
             }
         }
 

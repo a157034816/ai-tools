@@ -398,7 +398,7 @@
                         CornerRadius="8" Padding="6" Margin="0,0,0,8"
                         Visibility="{Binding IsCommandPaletteOpen, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
-                        <TextBlock Text="插件命令 · ↑↓ 选择，Enter 插入" Style="{StaticResource Hint}"
+                        <TextBlock Text="命令 · ↑↓ 选择，Enter 插入" Style="{StaticResource Hint}"
                                    Margin="6,2,6,6" />
                         <ListBox x:Name="CommandList" MaxHeight="190"
                                  Background="Transparent" BorderThickness="0"

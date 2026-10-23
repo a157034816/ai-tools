@@ -23,7 +23,8 @@ Console.WriteLine(response.GetText());
 - **多厂商**：OpenAI（含 DeepSeek、Moonshot/Kimi、通义千问兼容模式、Ollama、vLLM、OpenRouter、Groq 等兼容端点）、Anthropic、Gemini。
 - **完整能力面**：聊天（含流式、多模态、JSON Schema 结构化输出）、函数/工具调用、嵌入、图像生成、语音合成与转录。
 - **MCP 客户端**：stdio / Streamable HTTP / 旧版 HTTP+SSE 三种传输，`McpToolBridge` 一行代码把 MCP 工具变成模型可调用的函数。
-- **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json` 全部生效，内置 `/goal` 与 `/plan`。
+- **可编程扩展**：`IExtension` 注册命令、模型可调用工具（带曝光级别）、生命周期事件与会话状态；内置 `/goal`、`/plan` 两个有状态工作流。
+- **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json` 全部生效，与扩展命令共用同一个 `/` 面板。
 - **生产级细节**：指数退避重试、`Retry-After` 支持、统一异常体系（认证/限流/参数/服务端）、SSE 与 NDJSON 双协议解析、可注入 `HttpClient`。
 - **双目标**：`netstandard2.0` + `net8.0`，既能用于 .NET Framework 4.6.1+ 的老项目，也能享受现代运行时的性能。
 
@@ -38,7 +39,7 @@ Console.WriteLine(response.GetText());
 | `AiTools.Gemini` | Google Gemini API |
 | `AiTools.Mcp` | Model Context Protocol 客户端 |
 | `AiTools.Skills` | Agent Skills：技能发现、渐进式披露与模型可调用的技能加载工具 |
-| `AiTools.Extensions` | Extensions：兼容 Claude Code 的插件框架（清单、斜杠命令、插件技能、MCP 声明） |
+| `AiTools.Extensions` | Extensions：可编程扩展运行时（命令/工具/事件/会话状态）+ 兼容 Claude Code 的插件加载 |
 | `AiTools.Wpf` | 可复用 WPF 组件：设置页（供应商/模型配置）+ 对话页，宿主通过全局配置与接口注册 |
 
 典型引用方式：引用所选 Provider + `AiTools.Abstractions`（`Core` 会作为传递依赖自动引入）。
@@ -298,34 +299,69 @@ AiToolsWpf.RegisterToolProvider(SkillChatToolProvider.FromDirectory("skills"));
 
 详见 [`docs/SKILLS.md`](docs/SKILLS.md)；演示见 `samples/AiTools.Wpf.Demo/skills/commit-message`。
 
-## Extensions（Claude Code 兼容插件）
+## Extensions（可编程扩展 + Claude Code 插件）
 
-`AiTools.Extensions` 直接读取 Claude Code 的插件目录约定：`.claude-plugin/plugin.json`、`commands/*.md`、`skills/<name>/SKILL.md`、`.mcp.json`。插件命令会展开成一条用户消息再发给模型，其中的 `$ARGUMENTS`、`$1`、`${CLAUDE_PLUGIN_ROOT}` 等占位符按 Claude Code 规则替换。
+`AiTools.Extensions` 提供两层：用 C# 实现的**可编程扩展**，以及直接加载的 **Claude Code 插件包**。
+
+### 可编程扩展
 
 ```csharp
 using AiTools.Extensions;
+using AiTools.Extensions.BuiltIn;
 
-var catalog = ExtensionCatalog.LoadFromDirectory("D:/my-app/plugins");
-var host = new ExtensionHost(catalog, new ExtensionHostOptions
+AiToolsWpf.Initialize(new AiToolsWpfOptions
 {
-    ProjectDirectory = "D:/my-app",
-    EnableShellExecution = false          // 是否允许正文里的 !`cmd` 动态上下文注入
+    Extensions = new IExtension[] { new GoalExtension(), new PlanExtension(), new MyExtension() }
 });
+```
 
-if (host.TryResolve("/goal 实现插件框架", out var command, out var arguments))
+扩展在 `Activate(IExtensionApi api)` 中登记能力（不启动资源）：
+
+```csharp
+public sealed class MyExtension : IExtension
 {
-    var prompt = host.Render(command!, arguments).Text;  // 展开后的提示词，直接作为 user 消息发送
+    public string Name => "mine";
+    public string? Description => "…";
+
+    public void Activate(IExtensionApi api)
+    {
+        api.RegisterCommand("triage", "分类问题", async (ctx, args, ct) =>
+        {
+            ctx.State.Set(Name, "last", args.Raw);
+            return CommandResult.Prompt("按严重程度排序：" + args.Raw);
+        });
+
+        api.RegisterTool(ToolDefinition.Create("triage_note"), (call, ctx, ct) =>
+            Task.FromResult("noted"));
+
+        api.On<ToolCallEvent>(ExtensionEvent.ToolCall, (e, ctx, ct) =>
+        {
+            if (e.ToolName == "rm") e.Block("不允许删除");
+            return Task.FromResult<ToolCallEvent?>(e);
+        });
+    }
 }
 ```
 
-仓库内的 [`plugins/workflows`](plugins/workflows) 是一个可直接使用的插件，提供两个命令：
+| 能力 | API | 语义 |
+|---|---|---|
+| 命令 | `RegisterCommand` | 返回 `Prompt` / `Display` / `Noop`，可直接结束本轮 |
+| 工具 | `RegisterTool(..., ToolExposure)` | `Direct` / `ModelOnly` / `Deferred` / `Hidden` |
+| 事件 | `On(ExtensionEvent.X, …)` | `Input`、`BeforeAgentStart`、`ToolCall`、`ToolResult`、`TurnEnd`、`SessionStart/Shutdown` |
+| 状态 | `ctx.State` | 按扩展名分桶的 JSON，随会话持久化 |
 
-| 命令 | 作用 |
-|---|---|
-| `/goal <目标>` | 把目标转成可验证的成功标准 + 分步计划，并在后续轮次按清单汇报进度 |
-| `/plan <任务>` | 基于真实代码证据产出分步实施计划（文件、变更、验证方式、风险） |
+事件按注册顺序执行、转换类链式组合、拦截类 fail-closed。`session_start` 启动资源，`session_shutdown` 幂等释放。
 
-WPF 宿主一行接入，输入框中键入 `/` 即出现命令面板：
+### 内置 `/goal` 与 `/plan`
+
+| 命令 | 状态 | 工具 | 每轮注入 |
+|---|---|---|---|
+| `/goal <目标>` | 目标 + 可验证标准 + 步骤 | `goal_plan`、`goal_update`（标准需证据才能标记完成） | `## Session goal` 勾选状态与 `N/M steps` |
+| `/plan <任务>` | 计划步骤 + 风险 + 待确认问题 | `plan_save`、`plan_step`（含 `approve`） | `## Implementation plan`；未确认时写明不得开工 |
+
+状态保存在 `ConversationRecord.ExtensionState`：`/resume` 恢复、`/fork` 复制、`/new` 清空。
+
+### Claude Code 插件
 
 ```csharp
 AiToolsWpf.Initialize(new AiToolsWpfOptions
@@ -334,7 +370,9 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 });
 ```
 
-插件的 `skills/` 会通过 `load_skill` 元工具交给模型按需加载，`.mcp.json` 声明的 MCP 服务器会自动连接并把工具并入工具列表。详见 [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md)。
+`commands/*.md` 与 `skills/*/SKILL.md` 都成为斜杠命令（`/plugin:command`，短名不冲突时也可 `/command`），正文支持 `$ARGUMENTS`、`$1`、`${CLAUDE_PLUGIN_ROOT}` 等占位符；`skills/` 同时经 `load_skill` 交给模型按需加载，`.mcp.json` 声明的服务器自动连接。扩展命令优先于同名插件短名，冲突时面板插入限定名。
+
+详见 [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md)。
 
 ## MCP 服务端 / 嗅探客户端示例（WPF 桌面版）
 
@@ -445,12 +483,10 @@ src/
   AiTools.Gemini/         Gemini（聊天/嵌入/图像/音频）
   AiTools.Mcp/            MCP 客户端（stdio / Streamable HTTP / HTTP+SSE）
   AiTools.Skills/         Agent Skills（技能发现 + 渐进式披露）
-  AiTools.Extensions/     Claude Code 兼容插件（清单 / 斜杠命令 / 插件技能 / MCP 声明）
+  AiTools.Extensions/     可编程扩展运行时 + Claude Code 插件加载
   AiTools.Wpf/            WPF 设置页与对话页
 tests/
-  AiTools.Tests/          301 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
-plugins/
-  workflows/              /goal 与 /plan 插件（Claude Code 格式）
+  AiTools.Tests/          344 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
 samples/
   AiTools.Samples.Console/        可运行的演示程序
   AiTools.Samples.McpDiscovery/   本机 MCP 服务注册表（共享）
@@ -466,7 +502,7 @@ docs/
   WPF.md                  WPF 组件集成指南
   MCP_SAMPLES.md          MCP 服务端 / 嗅探客户端示例说明
   SKILLS.md               Agent Skills 集成指南
-  EXTENSIONS.md           插件框架与斜杠命令指南
+  EXTENSIONS.md           扩展运行时、/goal、/plan 与插件指南
   SESSIONS.md             会话恢复与分叉指南
   MCP_AGENT_MANAGER.md    多 agent MCP 管理器说明
 ```

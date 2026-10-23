@@ -102,7 +102,7 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 | `RequestBuilder` | 自定义请求构建钩子（返回 null 用默认逻辑） |
 | `OnTurnCompleted` | 每轮完成后的回调（日志/遥测） |
 | `PluginsDirectory` | 插件目录（Claude Code 格式）；目录本身是插件时按单个插件加载，否则递归发现 |
-| `Extensions` | 直接传入已加载的 `ExtensionCatalog`，优先于 `PluginsDirectory` |
+| `Extensions` | 直接传入已加载的 `PluginCatalog`，优先于 `PluginsDirectory` |
 | `ExtensionOptions` | 插件命令行为（项目根、数据目录、超时、短名冲突策略） |
 | `AllowPluginShellExecution` | 是否执行命令正文里的 `` !`cmd` `` 注入，默认 false |
 
@@ -134,22 +134,24 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 | `InputText` | 输入框内容 |
 | `IsBusy` / `HasUsableProvider` / `StatusMessage` / `StatusKind` | UI 状态 |
 | `SettingsRequested` / `ScrollToEndRequested` | 事件，用于宿主导航与自动滚动 |
-| `AvailableCommands` / `IsCommandPaletteOpen` / `SelectedCommand` | 插件命令面板 |
+| `AvailableCommands` / `IsCommandPaletteOpen` / `SelectedCommand` | 命令面板（扩展命令 + 插件命令） |
 | `ApplyCommandCommand` / `CloseCommandPaletteCommand` | 面板操作 |
+| `Pipeline` / `Commands` | 扩展管道与合并后的命令目录 |
 | `TryInvokeBuiltInCommandAsync(text)` | 处理会话级斜杠命令；返回 true 表示已消费 |
-| `TryExpandPluginCommandAsync(text)` | 把插件命令展开为提示词并发送 |
-| `RefreshAvailableCommands()` | 插件重新加载后刷新命令列表 |
+| `TryExecuteCommandAsync(text)` | 执行扩展/插件命令（`Prompt`/`Display`/`Noop`/`Error`） |
+| `RefreshAvailableCommands()` | 扩展或插件重新加载后刷新命令列表 |
 
-## 插件（Claude Code 兼容）
+## 扩展与插件
 
 ```csharp
 AiToolsWpf.Initialize(new AiToolsWpfOptions
 {
-    PluginsDirectory = Path.Combine(AppContext.BaseDirectory, "plugins")
+    EnableExtensions = true,                                    // 内置 /goal、/plan
+    PluginsDirectory = Path.Combine(AppContext.BaseDirectory, "plugins") // 可选
 });
 ```
 
-插件提供的 `commands/*.md` 与 `skills/*/SKILL.md` 都成为斜杠命令；`skills` 同时通过 `load_skill` 工具交给模型按需加载，`.mcp.json` 声明的服务器会自动连接并合并工具。完整格式、变量替换与已知差异见 [`EXTENSIONS.md`](EXTENSIONS.md)。
+扩展用 C# 注册命令/工具/事件，状态随 `ConversationRecord.ExtensionState` 一起保存与恢复（`/resume` 恢复、`/fork` 复制、`/new` 清空）。插件提供的 `commands/*.md` 与 `skills/*/SKILL.md` 同样成为斜杠命令，`skills` 经 `load_skill` 按需加载，`.mcp.json` 服务器自动连接。完整语义见 [`EXTENSIONS.md`](EXTENSIONS.md)。
 
 ## 设置页功能
 
