@@ -267,7 +267,8 @@ public sealed class ExtensionRuntimeTests
 
         var declared = runtime.DeclaredTools.Select(tool => tool.Definition.Name).ToArray();
 
-        Assert.Equal(new[] { "direct", "model" }, declared);
+        // 有 deferred 工具时运行时自动提供 tool_search（ModelOnly 且恒为激活）。
+        Assert.Equal(new[] { "direct", "model", "tool_search" }, declared);
         // 延迟/隐藏工具仍可被程序化调用。
         Assert.NotNull(runtime.TryGetTool("hidden"));
     }

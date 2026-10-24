@@ -68,6 +68,18 @@ public sealed class PluginCatalog
         .OrderBy(server => server.QualifiedName, StringComparer.Ordinal)
         .ToArray();
 
+    /// <summary>获取所有插件提供的输出风格。</summary>
+    public IReadOnlyList<OutputStyle> OutputStyles => Plugins
+        .SelectMany(plugin => plugin.OutputStyles)
+        .OrderBy(style => style.Name, StringComparer.Ordinal)
+        .ToArray();
+
+    /// <summary>获取所有插件提供的工作流，按限定名排序。</summary>
+    public IReadOnlyList<Workflows.WorkflowDefinition> Workflows => Plugins
+        .SelectMany(plugin => plugin.Workflows)
+        .OrderBy(workflow => workflow.Name, StringComparer.Ordinal)
+        .ToArray();
+
     /// <summary>获取是否存在任何命令。</summary>
     public bool HasCommands => Plugins.Any(plugin => plugin.Commands.Count > 0);
 
@@ -226,14 +238,14 @@ public sealed class PluginCatalog
                 return;
             }
 
-            if (plugin.Commands.Count == 0 && plugin.Skills.Count == 0 && plugin.McpServers.Count == 0)
+            if (plugin.Commands.Count == 0 && plugin.Skills.Count == 0 && plugin.McpServers.Count == 0 && plugin.OutputStyles.Count == 0 && plugin.Workflows.Count == 0)
             {
                 diagnostics.Add(new PluginDiagnostic
                 {
                     Kind = PluginDiagnosticKind.Warning,
                     PluginName = plugin.Name,
                     Path = full,
-                    Message = "Plugin declares no supported components (commands, skills or MCP servers)."
+                    Message = "Plugin declares no supported components (commands, skills, MCP servers, output styles or workflows)."
                 });
                 return;
             }

@@ -36,6 +36,10 @@ public static class AiToolsWpf
     /// <summary>获取 <see cref="Initialize(AiToolsWpfOptions?)"/> 是否已完成。</summary>
     public static bool IsInitialized => OptionsAccessor != null;
 
+    /// <summary>获取最近一次项目插件加载的信任决策。</summary>
+    public static AiTools.Extensions.TrustDecision? LastTrustDecision { get; private set; }
+
+
     /// <summary>
     /// 初始化各组件。必须在应用启动期间于 UI 线程上、创建任何页面之前调用一次。
     /// </summary>
@@ -261,9 +265,19 @@ public static class AiToolsWpf
         get
         {
             var options = Options;
+            var hostOptions = options.PluginHostOptions ?? new AiTools.Extensions.PluginHostOptions();
+            hostOptions.EnableShellExecution = options.AllowPluginShellExecution;
             if (options.Plugins == null && options.PluginsDirectory != null)
             {
-                options.Plugins = AiTools.Extensions.PluginCatalog.LoadFromDirectory(options.PluginsDirectory);
+                var trustDecision = AiTools.Extensions.ProjectTrust.Evaluate(
+                    hostOptions.ProjectDirectory ?? Environment.CurrentDirectory,
+                    options.TrustedRoots,
+                    options.RequireProjectTrust);
+                LastTrustDecision = trustDecision;
+                if (trustDecision.IsTrusted)
+                {
+                    options.Plugins = AiTools.Extensions.PluginCatalog.LoadFromDirectory(options.PluginsDirectory);
+                }
             }
 
             if (options.Plugins == null)
@@ -271,12 +285,10 @@ public static class AiToolsWpf
                 return null;
             }
 
-            var hostOptions = options.PluginHostOptions ?? new AiTools.Extensions.PluginHostOptions();
-            hostOptions.EnableShellExecution = options.AllowPluginShellExecution;
-
             return _pluginHost != null && ReferenceEquals(_pluginHost.Catalog, options.Plugins)
                 ? _pluginHost
                 : _pluginHost = new AiTools.Extensions.PluginHost(options.Plugins, hostOptions);
+
         }
     }
 
@@ -309,16 +321,35 @@ public static class AiToolsWpf
                 var hostOptions = options.PluginHostOptions ?? new AiTools.Extensions.PluginHostOptions();
                 hostOptions.EnableShellExecution = options.AllowPluginShellExecution;
 
-                _pipeline = new AiTools.Extensions.ExtensionPipeline(new AiTools.Extensions.ExtensionPipelineOptions
+                var pipeline = new AiTools.Extensions.ExtensionPipeline(new AiTools.Extensions.ExtensionPipelineOptions
                 {
                     Extensions = options.Extensions ?? CreateDefaultExtensions(),
                     Plugins = pluginHost?.Catalog,
                     PluginHostOptions = hostOptions,
-                    WorkingDirectory = hostOptions.ProjectDirectory ?? Environment.CurrentDirectory
+                    WorkingDirectory = hostOptions.ProjectDirectory ?? Environment.CurrentDirectory,
+                    OutputStyle = options.OutputStyle,
+                    Permissions = options.Permissions,
+                    EnableWorkflows = options.EnableWorkflows,
+                    WorkflowOptionsFactory = () =>
+                    {
+                        var activePipeline = _pipeline!;
+                        var sessionContext = activePipeline.Session.CreateContext(null, null);
+                        var workflowUi = new Extensions.WpfExtensionUi(
+                            (message, kind) => activePipeline.Ui?.Notify(message, kind));
+                        return new AiTools.Extensions.Workflows.WorkflowRuntimeOptions
+                        {
+                            ToolInvoker = async (name, json) =>
+                                (await activePipeline.Runtime.ExecuteToolAsync(name, json, sessionContext).ConfigureAwait(false)).Text,
+                            Log = message => workflowUi.Notify(message, AiTools.Extensions.ExtensionNoticeKind.Info),
+                            Policy = options.Permissions,
+                            Confirm = prompt => workflowUi.ConfirmAsync("确认工作流工具调用", prompt, defaultValue: false)
+                        };
+                    }
                 });
 
-                _ = _pipeline.StartAsync();
-                return _pipeline;
+                _pipeline = pipeline;
+                _ = pipeline.StartAsync();
+                return pipeline;
             }
         }
     }
@@ -340,6 +371,7 @@ public static class AiToolsWpf
     {
         OptionsAccessor = options;
         _settings = null;
+        LastTrustDecision = null;
         ResetExtensions();
         lock (ToolProviders)
         {
@@ -351,6 +383,7 @@ public static class AiToolsWpf
     public static void Reset()
     {
         OptionsAccessor = null;
+        LastTrustDecision = null;
         _settings = null;
         ResetExtensions();
         lock (ToolProviders)

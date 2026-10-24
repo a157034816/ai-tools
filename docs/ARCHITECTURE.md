@@ -80,8 +80,14 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 | `Runtime/ExtensionEvents.cs` | 事件枚举与载荷：`Input`、`BeforeAgentStart`、`ToolCall`、`ToolResult`、`TurnEnd`、`SessionStart`/`SessionShutdown` |
 | `Runtime/ExtensionRuntime.cs` | 注册表与分发：后注册胜出、转换类链式组合、拦截类 fail-closed；`ExecuteToolAsync`（带事件）与 `InvokeToolAsync`（不带） |
 | `Runtime/ExtensionSession.cs` | `session_start` / 幂等 `session_shutdown`、逆序清理回调 |
+| `Runtime/ToolLoadout.cs` | 装载结果（`Declared`/`Callable`/`All` + `Descriptions`/`HiddenDeclarations`）、`ToolNamespace`、`ToolReach`、`ToolGroup` |
+| `Runtime/ToolSearchTool.cs` | 内置 `tool_search`：在 `Codemode`/`Deferred` 里按子串查找并激活前 10 个 |
+| `Runtime/CodemodeTool.cs` | 内置 `codemode`：≤32 步的步骤编排 + `argumentsFrom`（不是 JS 引擎） |
 | `ExtensionStateStore.cs` | 按扩展名分桶的 JSON 状态，`TryGet<T>` 区分缺失与默认值，可 `ToJson`/`LoadFromJson` |
-| `ExtensionPipeline.cs` | 宿主入口：命令目录、`PrepareTurnAsync`（提示词段落 + 工具）、`PublishTurnEndAsync`、状态导入导出 |
+| `ExtensionPipeline.cs` | 宿主入口：命令目录、`PrepareTurnAsync`（提示词/输出风格/工具）、`GuardToolAsync`、权限后备、状态导入导出 |
+| `OutputStyles.cs` | `OutputStyle`/`OutputStyleCatalog`/`OutputStyleSelection`；`OutputStylePrompt.Apply` 追加正文而不删宿主提示 |
+| `Permissions.cs` | `PermissionRule`/`PermissionPolicy`（deny > ask > allow）、`PermissionGate`、`ProjectTrust`、`AccessControl` |
+| `Workflows/` | `WorkflowDefinition`/`WorkflowLoader`、Jint 沙箱 `WorkflowRuntime`、把工作流变成命令的 `WorkflowCommandAdapter` |
 | `CommandCatalog.cs` | 合并扩展命令与插件命令，全名精确优先、短名冲突检测 |
 | `BuiltIn/GoalExtension.cs` | `/goal` + `goal_plan` / `goal_update` + 每轮目标注入 |
 | `BuiltIn/PlanExtension.cs` | `/plan` + `plan_save` / `plan_step` + 每轮计划注入 |
@@ -90,8 +96,8 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 
 | 文件 | 内容 |
 |---|---|
-| `PluginManifest.cs` | 解析 `.claude-plugin/plugin.json`：元数据、`commands`、`mcpServers`，未支持组件记录为诊断 |
-| `PluginLoader.cs` | 单插件加载：`skills/<name>/SKILL.md`、`commands/**/*.md`、`.mcp.json`；路径限制在插件根内 |
+| `PluginManifest.cs` | 解析 `.claude-plugin/plugin.json`：元数据、`commands`、`mcpServers`、`outputStyles`、`workflows`，其余未支持组件记录为诊断 |
+| `PluginLoader.cs` | 单插件加载：`skills/<name>/SKILL.md`、`commands/**/*.md`、`output-styles/*.md`、`workflows/*.js`、`.mcp.json`；路径限制在插件根内 |
 | `PluginComponents.cs` | `PluginCommand` / `PluginSkill` / `PluginMcpServer` 模型 |
 | `PluginCatalog.cs` | 多插件发现、短名冲突检测、`ToSkillCatalog()` 聚合插件技能 |
 | `CommandTemplateRenderer.cs` | 正文的单遍渲染：`$ARGUMENTS`/`$N`/`$name`、`${CLAUDE_*}`、`` !`cmd` `` 与 ` ```! ` 注入 |
@@ -105,6 +111,8 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 - **事件组合可预测**：注册顺序 + 链式转换 + 拦截 fail-closed；宿主已分发事件时用 `InvokeToolAsync` 防止重复触发。
 - **状态分层**：跟随对话的状态存在 `ExtensionStateStore`，经 `ConversationRecord.ExtensionState` 持久化，不进模型上下文；要让模型看到就注入 `BeforeAgentStart`。
 - **单遍替换**：插件命令的参数与 shell 输出不会被二次扫描。
+- **权限 fail-closed**：`PermissionPolicy` 经 `tool_call` 事件生效，覆盖模型调用、`codemode` 内部步骤、`ctx.ExecuteToolAsync`、`Runtime.ExecuteToolAsync` 与工作流 `tool()`；`Ask` 没有确认通道即拒绝。项目资源在 `ProjectTrust` 判定为 `Untrusted` 时不加载。
+- **工作流沙箱只约束资源，不是安全边界**：`eval`/`Function` 禁用、步数与时长有上限，但脚本仍可通过 `tool`/`readFile` 触达宿主能力，拦截靠上一条。
 - **加载不抛异常**：清单非法 → `Error` 且插件不加载；路径越界、重名、缺文件 → `Warning`；不支持的组件 → `Info`。
 
 ## 线程与生命周期

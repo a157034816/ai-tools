@@ -73,6 +73,21 @@ public sealed class AiToolsWpfOptions
     /// <summary>是否允许插件命令执行正文中的 <c>!`cmd`</c> 动态上下文注入。默认为 false（WPF 宿主更保守）。</summary>
     public bool AllowPluginShellExecution { get; set; }
 
+    /// <summary>是否要求项目目录位于显式受信任根下后才加载项目插件。默认为 false。</summary>
+    public bool RequireProjectTrust { get; set; }
+
+    /// <summary>项目插件加载所允许的受信任目录根。</summary>
+    public IReadOnlyList<string>? TrustedRoots { get; set; }
+
+    /// <summary>要初始选择的插件输出风格名称。</summary>
+    public string? OutputStyle { get; set; }
+
+    /// <summary>工具调用权限策略；为 null 时不启用权限闸门。</summary>
+    public AiTools.Extensions.PermissionPolicy? Permissions { get; set; }
+
+    /// <summary>是否激活插件工作流。默认为 true。</summary>
+    public bool EnableWorkflows { get; set; } = true;
+
     /// <summary>校验选项并填充默认值。</summary>
     internal AiToolsWpfOptions Normalize()
     {

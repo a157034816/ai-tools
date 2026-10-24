@@ -144,6 +144,9 @@ public sealed class ExtensionSession : IAsyncDisposable
         }
     }
 
+    /// <summary>获取或设置宿主的交互界面（对应 Pi 的 <c>ctx.ui</c>）。</summary>
+    public IExtensionUi? Ui { get; set; }
+
     /// <summary>为当前会话构建命令上下文。</summary>
     public CommandContext CreateContext(
         Action<string, ExtensionNoticeKind>? notify,
@@ -154,9 +157,29 @@ public sealed class ExtensionSession : IAsyncDisposable
             State = State,
             SessionId = SessionId,
             WorkingDirectory = WorkingDirectory,
+            Ui = Ui,
             Notify = notify,
-            AppendAssistantMessage = appendAssistantMessage
+            AppendAssistantMessage = appendAssistantMessage,
+            EntryStore = EntryStore
         };
+
+    /// <summary>
+    /// 自定义条目存储：读取时 <paramref name="value"/> 为 null，写入时非 null。
+    /// 条目保存在 <see cref="ExtensionStateStore"/> 的 <c>entries.</c> 命名空间下，因此会随会话持久化。
+    /// </summary>
+    private object? EntryStore(string kind, object? value)
+    {
+        const string extensionBucket = "__session_entries__";
+        var key = "entries." + kind;
+
+        if (value == null)
+        {
+            return State.Get(extensionBucket, key);
+        }
+
+        State.Set(extensionBucket, key, value);
+        return value;
+    }
 
     /// <inheritdoc />
     public ValueTask DisposeAsync() => new(ShutdownAsync());

@@ -99,7 +99,7 @@ public sealed class AnthropicChatClient : IChatClient
         }
 
         var body = BuildRequestBody(request, stream: false);
-        using var response = await SendAsync(body, cancellationToken).ConfigureAwait(false);
+        using var response = await SendAsync(body, request.Model, streaming: false, cancellationToken).ConfigureAwait(false);
         var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
         try
@@ -129,14 +129,18 @@ public sealed class AnthropicChatClient : IChatClient
         }
 
         var body = BuildRequestBody(request, stream: true);
-        using var response = await SendAsync(body, cancellationToken).ConfigureAwait(false);
+        using var response = await SendAsync(body, request.Model, streaming: true, cancellationToken).ConfigureAwait(false);
         using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
 
         int? inputTokens = null;
         int? cacheReadTokens = null;
         int? cacheCreationTokens = null;
 
-        await foreach (var evt in SseParser.ParseAsync(stream, cancellationToken).ConfigureAwait(false))
+        await foreach (var evt in ObservedSseParser.ParseObservedAsync(
+            stream,
+            _options.Observer,
+            new AiRequestContext { ProviderName = Provider, Operation = "chat", Model = request.Model, IsStreaming = true },
+            cancellationToken).ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -291,10 +295,19 @@ public sealed class AnthropicChatClient : IChatClient
         }
     }
 
-    private async Task<HttpResponseMessage> SendAsync(string body, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendAsync(
+        string body,
+        string? model,
+        bool streaming,
+        CancellationToken cancellationToken)
     {
         return await _httpClient
-            .SendWithRetryAsync(() => CreateHttpRequest(body), Provider, _options, cancellationToken)
+            .SendWithRetryAsync(
+                () => CreateHttpRequest(body),
+                Provider,
+                _options,
+                cancellationToken,
+                new AiRequestContext { ProviderName = Provider, Operation = "chat", Model = model, IsStreaming = streaming })
             .ConfigureAwait(false);
     }
 

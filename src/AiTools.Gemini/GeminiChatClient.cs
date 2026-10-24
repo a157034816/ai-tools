@@ -73,12 +73,21 @@ public sealed class GeminiChatClient : IChatClient
                 () => GeminiInfrastructure.CreateRequest(HttpMethod.Post, uri, _options, body, stream: false),
                 ProviderName,
                 _options,
-                token)
+                token,
+                new AiRequestContext { ProviderName = ProviderName, Operation = "chat", Model = request.Model })
             .ConfigureAwait(false);
 
         var responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
         return GeminiChatResponseParser.ParseComplete(responseBody);
     }
+
+    private AiRequestContext StreamContext(string? model) => new()
+    {
+        ProviderName = ProviderName,
+        Operation = "chat",
+        Model = model,
+        IsStreaming = true
+    };
 
     /// <inheritdoc />
     public async IAsyncEnumerable<ChatStreamUpdate> StreamAsync(
@@ -101,7 +110,8 @@ public sealed class GeminiChatClient : IChatClient
                 () => GeminiInfrastructure.CreateRequest(HttpMethod.Post, uri, _options, body, stream: true),
                 ProviderName,
                 _options,
-                token)
+                token,
+                new AiRequestContext { ProviderName = ProviderName, Operation = "chat", Model = request.Model, IsStreaming = true })
             .ConfigureAwait(false);
 
         var state = new GeminiChatResponseParser.GeminiStreamState();
@@ -110,7 +120,7 @@ public sealed class GeminiChatClient : IChatClient
         {
             if (UsesEventStream(response))
             {
-                await foreach (var evt in SseParser.ParseAsync(stream, token).ConfigureAwait(false))
+                await foreach (var evt in ObservedSseParser.ParseObservedAsync(stream, _options.Observer, StreamContext(request.Model), token).ConfigureAwait(false))
                 {
                     if (!SseParser.TryParseJson(evt, out var element))
                     {
@@ -162,7 +172,7 @@ public sealed class GeminiChatClient : IChatClient
                 else if (looksLikeSse)
                 {
                     using var sseStream = new System.IO.MemoryStream(System.Text.Encoding.UTF8.GetBytes(buffered));
-                    await foreach (var evt in SseParser.ParseAsync(sseStream, token).ConfigureAwait(false))
+                    await foreach (var evt in ObservedSseParser.ParseObservedAsync(sseStream, _options.Observer, StreamContext(request.Model), token).ConfigureAwait(false))
                     {
                         if (!SseParser.TryParseJson(evt, out var element))
                         {
@@ -178,7 +188,7 @@ public sealed class GeminiChatClient : IChatClient
                 else
                 {
                     using var buffer = new System.IO.MemoryStream(System.Text.Encoding.UTF8.GetBytes(buffered));
-                    await foreach (var element in SseParser.ParseNdJsonAsync(buffer, token).ConfigureAwait(false))
+                    await foreach (var element in ObservedSseParser.ParseNdJsonObservedAsync(buffer, _options.Observer, StreamContext(request.Model), token).ConfigureAwait(false))
                     {
                         foreach (var update in GeminiChatResponseParser.ParseChunk(element, state))
                         {

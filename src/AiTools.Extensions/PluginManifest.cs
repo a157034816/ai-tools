@@ -38,6 +38,12 @@ internal sealed class PluginManifest
     /// <summary>manifest <c>commands</c> 的对象映射形式（命令名 → 内联或文件）。</summary>
     public List<ManifestCommandEntry> InlineCommands { get; } = new();
 
+    /// <summary>manifest <c>outputStyles</c> 声明的文件或目录；null 表示未声明（仍扫描默认 <c>output-styles/</c>）。</summary>
+    public List<string>? OutputStylePaths { get; private set; }
+
+    /// <summary>manifest <c>workflows</c> 声明的 JavaScript 文件或目录。</summary>
+    public List<string>? WorkflowPaths { get; private set; }
+
     /// <summary>manifest <c>mcpServers</c> 声明的 JSON 文件路径。</summary>
     public List<string> McpServerPaths { get; } = new();
 
@@ -141,6 +147,12 @@ internal sealed class PluginManifest
                 manifest.SkillPaths.Add(target);
             });
 
+            ReadPathList(root, "outputStyles", manifest, target =>
+            {
+                manifest.OutputStylePaths ??= new List<string>();
+                manifest.OutputStylePaths.Add(target);
+            });
+
             if (root.TryGetProperty("commands", out var commands))
             {
                 ReadCommands(commands, manifest, manifestPath);
@@ -151,7 +163,13 @@ internal sealed class PluginManifest
                 ReadMcpServers(mcpServers, manifest, manifestPath);
             }
 
-            foreach (var key in new[] { "agents", "hooks", "lspServers", "outputStyles", "workflows", "themes", "monitors", "channels", "experimental", "settings", "bin", "userConfig", "dependencies" })
+            ReadPathList(root, "workflows", manifest, target =>
+            {
+                manifest.WorkflowPaths ??= new List<string>();
+                manifest.WorkflowPaths.Add(target);
+            });
+
+            foreach (var key in new[] { "agents", "hooks", "lspServers", "themes", "monitors", "channels", "experimental", "settings", "bin", "userConfig", "dependencies" })
             {
                 if (root.TryGetProperty(key, out _))
                 {

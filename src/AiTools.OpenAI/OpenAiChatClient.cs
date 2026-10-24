@@ -76,7 +76,8 @@ public sealed class OpenAiChatClient : IChatClient
                 () => OpenAiHelpers.CreateRequest(HttpMethod.Post, "chat/completions", _options, AiContent.Json(body)),
                 ProviderName,
                 _options,
-                timeoutSource.Token)
+                timeoutSource.Token,
+                new AiRequestContext { ProviderName = ProviderName, Operation = "chat", Model = request.Model })
             .ConfigureAwait(false);
 
         var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -100,11 +101,16 @@ public sealed class OpenAiChatClient : IChatClient
                 () => OpenAiHelpers.CreateRequest(HttpMethod.Post, "chat/completions", _options, AiContent.Json(body)),
                 ProviderName,
                 _options,
-                timeoutSource.Token)
+                timeoutSource.Token,
+                new AiRequestContext { ProviderName = ProviderName, Operation = "chat", Model = request.Model, IsStreaming = true })
             .ConfigureAwait(false);
 
         using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-        await foreach (var evt in SseParser.ParseAsync(stream, timeoutSource.Token).ConfigureAwait(false))
+        await foreach (var evt in ObservedSseParser.ParseObservedAsync(
+            stream,
+            _options.Observer,
+            new AiRequestContext { ProviderName = ProviderName, Operation = "chat", Model = request.Model, IsStreaming = true },
+            timeoutSource.Token).ConfigureAwait(false))
         {
             if (evt.IsDone)
             {

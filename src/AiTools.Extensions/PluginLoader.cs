@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using AiTools.Extensions.Workflows;
 using AiTools.Skills;
 
 namespace AiTools.Extensions;
@@ -12,7 +13,7 @@ namespace AiTools.Extensions;
 /// <summary>
 /// 按 Claude Code 的插件目录约定加载单个插件：
 /// <c>.claude-plugin/plugin.json</c>、<c>skills/&lt;name&gt;/SKILL.md</c>、
-/// <c>commands/*.md</c>、<c>.mcp.json</c>。加载过程永不抛出异常，
+/// <c>commands/*.md</c>、<c>workflows/*.js</c>、<c>.mcp.json</c>。加载过程永不抛出异常，
 /// 问题通过 <see cref="AiToolsPlugin.Diagnostics"/> 返回。
 /// </summary>
 public static class PluginLoader
@@ -31,7 +32,10 @@ public static class PluginLoader
         return File.Exists(Path.Combine(directory, ".claude-plugin", "plugin.json"))
                || File.Exists(Path.Combine(directory, "SKILL.md"))
                || Directory.Exists(Path.Combine(directory, "skills"))
-               || Directory.Exists(Path.Combine(directory, "commands"));
+               || Directory.Exists(Path.Combine(directory, "commands"))
+               || Directory.Exists(Path.Combine(directory, "output-styles"))
+               || Directory.Exists(Path.Combine(directory, "workflows")) &&
+                  Directory.EnumerateFiles(Path.Combine(directory, "workflows"), "*.js", SearchOption.TopDirectoryOnly).Any();
     }
 
     /// <summary>加载单个插件目录。永不抛出异常。</summary>
@@ -55,7 +59,7 @@ public static class PluginLoader
                 Path = root,
                 Message = "The plugin directory does not exist."
             });
-            return Build(root, null, null, diagnostics, Array.Empty<PluginCommand>(), Array.Empty<PluginSkill>(), Array.Empty<PluginMcpServer>());
+            return Build(root, null, null, diagnostics, Array.Empty<PluginCommand>(), Array.Empty<PluginSkill>(), Array.Empty<PluginMcpServer>(), Array.Empty<OutputStyle>(), Array.Empty<WorkflowDefinition>());
         }
 
         var manifestPath = Path.Combine(root, ".claude-plugin", "plugin.json");
@@ -105,8 +109,10 @@ public static class PluginLoader
         var skills = LoadSkills(root, pluginName, manifest, diagnostics);
         var commands = LoadCommands(root, pluginName, manifest, skills, diagnostics);
         var mcpServers = LoadMcpServers(root, pluginName, manifest, diagnostics);
+        var outputStyles = LoadOutputStyles(root, pluginName, manifest, diagnostics);
+        var workflows = LoadWorkflows(root, pluginName, manifest, diagnostics);
 
-        return Build(root, manifestPath, manifest, diagnostics, commands, skills, mcpServers, pluginName);
+        return Build(root, manifestPath, manifest, diagnostics, commands, skills, mcpServers, outputStyles, workflows, pluginName);
     }
 
     /// <summary>把任意字符串规范化为可用的插件标识（小写、连字符）。</summary>
@@ -183,6 +189,8 @@ public static class PluginLoader
         IReadOnlyList<PluginCommand> commands,
         IReadOnlyList<PluginSkill> skills,
         IReadOnlyList<PluginMcpServer> mcpServers,
+        IReadOnlyList<OutputStyle> outputStyles,
+        IReadOnlyList<WorkflowDefinition> workflows,
         string? nameOverride = null)
     {
         var name = nameOverride ?? SanitizePluginName(manifest?.Name ?? new DirectoryInfo(root).Name);
@@ -204,6 +212,8 @@ public static class PluginLoader
             Commands = commands,
             Skills = skills,
             McpServers = mcpServers,
+            OutputStyles = outputStyles,
+            Workflows = workflows,
             Diagnostics = diagnostics
         };
     }
@@ -698,6 +708,266 @@ public static class PluginLoader
             DisableModelInvocation = FrontmatterHelper.GetBool(frontmatter, "disable-model-invocation") ?? false,
             UserInvocable = FrontmatterHelper.GetBool(frontmatter, "user-invocable") ?? true
         };
+    }
+
+    private static List<OutputStyle> LoadOutputStyles(
+        string root,
+        string pluginName,
+        PluginManifest? manifest,
+        List<PluginDiagnostic> diagnostics)
+    {
+        var styles = new List<OutputStyle>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sources = new List<string>();
+
+        foreach (var declared in manifest?.OutputStylePaths ?? new List<string>())
+        {
+            var resolved = ResolvePath(root, declared);
+            if (resolved == null)
+            {
+                diagnostics.Add(new PluginDiagnostic
+                {
+                    Kind = PluginDiagnosticKind.Warning,
+                    PluginName = pluginName,
+                    Path = declared,
+                    Message = "Output style path is outside the plugin directory and was ignored."
+                });
+                continue;
+            }
+
+            if (!Directory.Exists(resolved) && !File.Exists(resolved))
+            {
+                diagnostics.Add(new PluginDiagnostic
+                {
+                    Kind = PluginDiagnosticKind.Warning,
+                    PluginName = pluginName,
+                    Path = resolved,
+                    Message = "Output style path does not exist."
+                });
+                continue;
+            }
+
+            sources.Add(resolved);
+        }
+
+        // manifest 未声明 outputStyles 时才回退到默认目录。
+        if (manifest?.OutputStylePaths == null)
+        {
+            var defaultDirectory = Path.Combine(root, "output-styles");
+            if (Directory.Exists(defaultDirectory))
+            {
+                sources.Add(defaultDirectory);
+            }
+        }
+
+        foreach (var source in sources)
+        {
+            IEnumerable<string> files;
+            if (File.Exists(source))
+            {
+                files = new[] { source };
+            }
+            else
+            {
+                try
+                {
+                    files = Directory.EnumerateFiles(source, "*.md", SearchOption.AllDirectories)
+                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                }
+                catch (Exception ex)
+                {
+                    diagnostics.Add(new PluginDiagnostic
+                    {
+                        Kind = PluginDiagnosticKind.Warning,
+                        PluginName = pluginName,
+                        Path = source,
+                        Message = "Failed to enumerate output styles: " + ex.Message
+                    });
+                    continue;
+                }
+            }
+
+            foreach (var file in files)
+            {
+                string content;
+                try
+                {
+                    content = File.ReadAllText(file, Encoding.UTF8);
+                }
+                catch (Exception ex)
+                {
+                    diagnostics.Add(new PluginDiagnostic
+                    {
+                        Kind = PluginDiagnosticKind.Warning,
+                        PluginName = pluginName,
+                        Path = file,
+                        Message = "Failed to read the output style: " + ex.Message
+                    });
+                    continue;
+                }
+
+                var style = OutputStyleParser.Parse(
+                    content,
+                    Path.GetFileNameWithoutExtension(file),
+                    pluginName,
+                    file,
+                    out var warning);
+
+                if (warning != null)
+                {
+                    diagnostics.Add(new PluginDiagnostic
+                    {
+                        Kind = PluginDiagnosticKind.Warning,
+                        PluginName = pluginName,
+                        Path = file,
+                        Message = warning
+                    });
+                }
+
+                if (style == null)
+                {
+                    continue;
+                }
+
+                if (!seen.Add(style.Name))
+                {
+                    diagnostics.Add(new PluginDiagnostic
+                    {
+                        Kind = PluginDiagnosticKind.Warning,
+                        PluginName = pluginName,
+                        Path = file,
+                        Message = $"Duplicate output style name '{style.Name}'. The first definition wins."
+                    });
+                    continue;
+                }
+
+                styles.Add(style);
+            }
+        }
+
+        styles.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.Ordinal));
+        return styles;
+    }
+
+    private static List<WorkflowDefinition> LoadWorkflows(
+        string root,
+        string pluginName,
+        PluginManifest? manifest,
+        List<PluginDiagnostic> diagnostics)
+    {
+        var workflows = new List<WorkflowDefinition>();
+        var sources = new List<string>();
+        var seenSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var defaultDirectory = Path.Combine(root, "workflows");
+        if (Directory.Exists(defaultDirectory))
+        {
+            sources.Add(defaultDirectory);
+            seenSources.Add(defaultDirectory);
+        }
+
+        foreach (var declared in manifest?.WorkflowPaths ?? new List<string>())
+        {
+            var resolved = ResolvePath(root, declared);
+            if (resolved == null)
+            {
+                diagnostics.Add(new PluginDiagnostic
+                {
+                    Kind = PluginDiagnosticKind.Warning,
+                    PluginName = pluginName,
+                    Path = declared,
+                    Message = "Workflow path is outside the plugin directory and was ignored."
+                });
+                continue;
+            }
+
+            if (!Directory.Exists(resolved) && !File.Exists(resolved))
+            {
+                diagnostics.Add(new PluginDiagnostic
+                {
+                    Kind = PluginDiagnosticKind.Warning,
+                    PluginName = pluginName,
+                    Path = resolved,
+                    Message = "Workflow path does not exist."
+                });
+                continue;
+            }
+
+            if (seenSources.Add(resolved))
+            {
+                sources.Add(resolved);
+            }
+        }
+
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var source in sources)
+        {
+            IReadOnlyList<WorkflowDefinition> loaded;
+            if (Directory.Exists(source))
+            {
+                loaded = WorkflowLoader.LoadDirectory(source, pluginName, out var workflowDiagnostics);
+                diagnostics.AddRange(workflowDiagnostics);
+            }
+            else
+            {
+                var definition = WorkflowLoader.Load(source, pluginName, out var error);
+                if (definition == null)
+                {
+                    diagnostics.Add(new PluginDiagnostic
+                    {
+                        Kind = PluginDiagnosticKind.Error,
+                        PluginName = pluginName,
+                        Path = source,
+                        Message = error ?? "Unable to load workflow."
+                    });
+                    continue;
+                }
+
+                if (error != null)
+                {
+                    diagnostics.Add(new PluginDiagnostic
+                    {
+                        Kind = PluginDiagnosticKind.Warning,
+                        PluginName = pluginName,
+                        Path = source,
+                        Message = error
+                    });
+                }
+
+                loaded = new[] { definition };
+            }
+
+            foreach (var workflow in loaded)
+            {
+                var qualifiedName = pluginName + ":" + workflow.Name;
+                if (!seenNames.Add(qualifiedName))
+                {
+                    diagnostics.Add(new PluginDiagnostic
+                    {
+                        Kind = PluginDiagnosticKind.Warning,
+                        PluginName = pluginName,
+                        Path = workflow.SourcePath,
+                        Message = "Workflow name '" + workflow.Name + "' is duplicated; the first definition wins."
+                    });
+                    continue;
+                }
+
+                workflows.Add(new WorkflowDefinition
+                {
+                    Name = qualifiedName,
+                    Description = workflow.Description,
+                    SourcePath = workflow.SourcePath,
+                    Script = workflow.Script,
+                    PluginName = pluginName,
+                    Parameters = workflow.Parameters,
+                    ArgumentTemplate = workflow.ArgumentTemplate,
+                    MetaJson = workflow.MetaJson
+                });
+            }
+        }
+
+        workflows.Sort((left, right) => string.Compare(left.Name, right.Name, StringComparison.Ordinal));
+        return workflows;
     }
 
     private static List<PluginMcpServer> LoadMcpServers(

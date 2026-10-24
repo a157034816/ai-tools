@@ -5,20 +5,27 @@
 | 层 | 形态 | 适合 |
 |---|---|---|
 | **Extensions**（本页主述） | C# 类实现 `IExtension`，可注册命令、工具、事件处理器、持有会话状态 | 需要状态、工具、拦截、生命周期的工作流 |
-| **Plugins**（见下节） | Claude Code 插件目录：`plugin.json` + `commands/*.md` + `skills/` + `.mcp.json` | 分发既有的 Claude Code 插件包 |
+| **Plugins**（见下节） | Claude Code 插件目录：`plugin.json` + `commands/*.md` + `skills/` + `.mcp.json` + `output-styles/` + `workflows/` | 分发既有的 Claude Code 插件包 |
 
-设计取向来自 Pi：**扩展是可执行行为，不是提示词片段**。因此 `/goal` 与 `/plan` 不是两段 Markdown，而是带状态、工具与跨轮次注入的扩展。
+设计取向来自 Pi：**扩展是可执行行为，不是提示词片段**。因此 `/goal` 与 `/plan` 不是两段 Markdown，而是带状态、工具与跨轮次注入的扩展。工具可达性、输出风格、工作流与权限/信任同样是运行时的一部分，不是提示词约定。
 
 ## 运行时结构
 
 ```
-ExtensionPipeline          宿主唯一入口：命令目录、工具表、会话、状态导入导出
+ExtensionPipeline          宿主唯一入口：命令目录、工具表、会话、输出风格、权限、状态导入导出
 ├── ExtensionRuntime       注册表 + 事件分发（Pi 的 pi.on / registerTool / registerCommand）
 │   ├── ExtensionCommand   /goal 这类代码命令
-│   ├── ExtensionTool      模型可调用，带曝光级别
+│   ├── ExtensionTool      模型可调用，带曝光级别与可达范围
+│   ├── ToolLoadout        装载结果：Declared / Callable / All + 准备器改写
+│   ├── ToolSearchTool     内置 tool_search：查找并激活 Codemode/Deferred 工具
+│   ├── CodemodeTool       内置 codemode：受限的步骤编排（不是 JS 引擎）
 │   └── ExtensionSession   session_start / session_shutdown、清理回调
 ├── ExtensionStateStore    按扩展名分桶的 JSON 状态，可选持久化
 ├── CommandCatalog         扩展命令 + 插件命令的统一解析
+├── OutputStyleCatalog     插件/宿主输出风格汇总，SelectedStyle 改写系统提示
+├── PermissionPolicy       规则引擎（deny > ask > allow）+ PermissionGate 闸门
+│   └── ProjectTrust       加载项目插件前判定 Trusted / Untrusted
+├── Workflows              Jint 沙箱里的 JS 工作流 → 斜杠命令 + workflow_list 工具
 └── PluginHost             Claude Code 插件的渲染与 MCP 连接
 ```
 
@@ -67,6 +74,89 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 });
 ```
 
+### provider 级钩子如何生效
+
+Provider 层通过 `AiHttpOptions.Observer`（`IAiHttpObserver`）暴露接缝，`ExtensionPipeline.CreateHttpObserver()` 把它桥到扩展事件：
+
+```csharp
+var observer = pipeline.CreateHttpObserver(() => context);
+var client = new OpenAiChatClient(new OpenAiOptions
+{
+    ApiKey = key,
+    BaseAddress = new Uri("https://api.openai.com/v1"),
+    Observer = observer        // BeforeProviderHeaders / BeforeProviderRequest / … 生效
+});
+```
+
+WPF 宿主在构造聊天客户端时自动挂接（自定义 `IProviderFactory` 仍然优先，此时观察器不注入）。`BeforeProviderRequest` 抛 `AiRequestBlockedException` 会让请求不发出。
+
+### 扩展界（`ctx.Ui`）
+
+```csharp
+if (ctx.Ui is { HasDialogs: true })
+{
+    if (!await ctx.Ui.ConfirmAsync("确认", "允许修改这个文件？")) return CommandResult.Noop;
+}
+
+var choice = await ctx.Ui.SelectAsync("选择环境", new[] { "staging", "production" });
+ctx.Ui.SetStatus("正在部署…");
+```
+
+WPF 侧 `WpfExtensionUi` 把通知接到状态栏，`ConfirmAsync` / `InputAsync` / `SelectAsync` 使用模态窗口；无 `Application` 时退化为非交互（确认返回默认值，输入/选择返回 null）。宿主不提供 UI 时 `ctx.Ui` 为 null，扩展必须处理。
+
+### 自定义条目（`appendEntry`）
+
+```csharp
+ctx.AppendEntry("checkpoint", new { step = 3, note = "after refactor" });
+var last = ctx.ReadEntry("checkpoint");
+```
+
+条目写入扩展状态桶（键前缀 `entries.`），随 `ConversationRecord.ExtensionState` 持久化，**不进入模型上下文**——对应 Pi 的 `appendEntry`。
+
+### provider / 虚拟模型 / MCP 注册
+
+```csharp
+api.RegisterProvider(new ExtensionProviderRegistration
+{
+    Name = "router-local", Protocol = "openai",
+    BaseAddress = new Uri("http://localhost:1234/v1"), ApiKey = "local", DefaultModel = "qwen"
+});
+
+api.RegisterVirtualModel(new VirtualModelRegistration
+{
+    VirtualModelName = "smart", Provider = "router-local", TargetModel = "qwen",
+    Rewrite = request => request          // 可选：进一步改写请求
+});
+
+var unregister = api.RegisterMcpServer(new PluginMcpServer
+{
+    Name = "db", Transport = PluginMcpTransportKind.Stdio,
+    Command = "npx", Arguments = new[] { "-y", "db-server" }
+});
+```
+
+- `RegisterProvider`：`ExtensionProviderRouter` 在创建聊天客户端时优先匹配它（协议复用内置 OpenAI/Anthropic/Gemini 客户端）。
+- `RegisterVirtualModel`：用户选择 `smart` 时，请求被改写为 `qwen` 发往 `router-local`。
+- `RegisterMcpServer`：`ExtensionPipeline.StartAsync` 连接后把工具登记为 `ext_<server>_<tool>`；失败只记 `Warning` 诊断，`unregister` 可移除声明。
+
+### 工具渲染
+
+```csharp
+api.RegisterToolRenderer(ctx => ctx.ToolName == "goal_update" && !ctx.IsResult
+    ? "🎯 更新目标进度"
+    : null);   // 返回 null 交给下一个渲染器，最后回退到默认 chip
+```
+
+WPF 对话页用渲染结果替换默认的 `🔧 name(args)` 标签。
+
+### 热重载
+
+```csharp
+var diagnostics = await pipeline.ReloadAsync();
+```
+
+流程：关闭扩展注册的 MCP 连接 → `session_shutdown` → 清空注册表 → 重新 `Activate` → 重新 `session_start`。状态保留（同一个 `ExtensionStateStore`），旧 `Session` 上下文失效。
+
 `Activate` 只在构造管道时调用一次，**必须快速返回且不启动进程或定时器**（与 Pi 的工厂约束一致）；长生命周期资源放到 `SessionStart`，并在 `SessionShutdown` 里幂等释放。
 
 ## 事件
@@ -77,8 +167,15 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 | `SessionShutdown` | 会话关闭 | 释放资源；处理器必须幂等 |
 | `Input` | 用户输入 | `InputEvent`：改写 `Text` 或 `Suppress` 吞掉 |
 | `BeforeAgentStart` | 请求发出前 | `BeforeAgentStartEvent`：追加 `PromptSections`、`PrependMessages` |
-| `ToolCall` | 工具调用前 | `ToolCallEvent`：改写 `ArgumentsJson`、`BlockReason` 拦截 |
+| `Context` | provider 请求前 | `ContextEvent`：过滤/改写消息（系统提示不受影响） |
+| `ContextWithSystem` | provider 请求前 | `ContextEvent`：同时改写 `SystemPrompt` |
+| `ToolCall` | 工具调用前 | `ToolCallEvent`：改写 `ArgumentsJson`、`BlockReason` 拦截；覆盖所有分发路径（含 `codemode` 内部步骤与 `ctx.ExecuteToolAsync`） |
 | `ToolResult` | 工具返回后 | `ToolResultEvent`：脱敏/截断 `Text` |
+| `ToolExecutionStart` / `Update` / `End` | 工具生命周期 | `ToolExecutionEvent`：观察参数、增量输出、耗时 |
+| `BeforeProviderHeaders` | 请求头构造后 | `ProviderHeadersEvent`：就地改写请求头 |
+| `BeforeProviderRequest` | 请求体序列化后 | `ProviderRequestEvent`：改写 `BodyJson` 或 `BlockReason` 阻止发出 |
+| `AfterProviderResponse` | 收到响应头 | `ProviderResponseEvent`：状态码、长度、耗时 |
+| `ProviderStreamEvent` | 每个流事件 | `ProviderStreamEvent`：原始 SSE/NDJSON 数据（只读） |
 | `TurnEnd` | 一轮结束 | `TurnEndEvent`：`Continue` + `ContinuationPrompt` 请求追加一轮 |
 
 组合语义（与 Pi 一致）：
@@ -89,22 +186,92 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 - 通知类（`SessionStart` 等）的异常被吞掉，不打断对话。
 - `pi.on` 的等价物返回一个取消订阅的 `Action`。
 
-## 工具与曝光级别
+## 工具：曝光、激活集合与命名空间
 
-| 曝光 | 声明给模型 | 可被其它工具调用 |
-|---|---|---|
-| `Direct`（默认） | ✅ | ✅ |
-| `ModelOnly` | ✅ | ❌ |
-| `Deferred` | ❌ | ✅（登记后即可调用） |
-| `Hidden` | ❌ | ❌（用于撤回） |
+工具的可达性由三件事共同决定：**曝光级别**、**激活集合**、**装载准备器**。声明面（进入模型请求的工具清单）与可调用面（其它工具经 `ExecuteToolAsync` 能调到的工具）是两套判定。
 
-调用路径：
+| 曝光 | 声明给模型 | 可被其它工具调用 | 登记时的激活 |
+|---|---|---|---|
+| `Direct`（默认） | ✅ | ✅（需在激活集合中） | 自动激活 |
+| `ModelOnly` | ✅ | ❌（编排/提问型工具） | 自动激活 |
+| `Codemode` | 激活后 ✅ | ✅（登记即可调用） | 不激活 |
+| `Deferred` | 激活后 ✅ | ✅（登记即可调用） | 不激活 |
+| `Hidden` | ❌ | ❌ | 不激活，激活是空操作 |
+
+- `Codemode` 与 `Deferred` 的执行语义相同（登记即可被调用），区别只在声明意图：`Codemode` 面向"由 `codemode` 编排"的工具，`Deferred` 面向"只在需要时才被发现"的工具。`tool_search` 两类都搜。
+- 激活：`pipeline.ActivateTool(name)` 或 `pipeline.SetActiveTools(names)`（整体替换）。未登记的名字被忽略，`Hidden`/`Direct`/`ModelOnly` 的激活请求返回 false 且无副作用。
+- `Hidden` 用于撤回：登记后既不声明也不可调用；撤回已有工具用 `DeactivateTool`，只从声明面移除用装载准备器的 `HiddenDeclarations`。
+- `pipeline.BuildToolRegistrations()` 只返回 `Declared`；运行时的 `ExecuteToolAsync` 判定 `Callable`。
+
+### 命名空间与分组
+
+```csharp
+api.RegisterNamespace(new ToolNamespace { Name = "mcp__docs", Aliases = new[] { "docs" }, Description = "文档库" });
+api.RegisterTool(def, execute, ToolExposure.Direct, @namespace: "mcp__docs");
+```
+
+命名空间名与别名在比较时归一到小写且 `-` 与 `_` 等价：`my-docs` ≡ `my_docs`。`ctx.ToolGroups()`（或 `Runtime.ToolGroups()`）按命名空间分组返回可调用工具，未分组的工具单独成组。
+
+### `ToolReach`：一次调用能触达什么
+
+编排型工具用 `reachesTools` 声明自己一次性能够到的工具范围：
+
+```csharp
+api.RegisterTool(def, execute, ToolExposure.ModelOnly, reachesTools: ToolReach.Words("mcp__docs", "grep"));
+```
+
+`ToolReach.All()` 不限制；`ToolReach.Words(...)` 只允许命中词的工具。词匹配工具名、工具所属命名空间的名称与别名（包含关系，大小写与分隔符差异不敏感）。嵌套调用时父工具与调用者声明的范围都会被检查，越界的调用返回 `{"error": "Tool 'x' is outside the reach of 'y'."}`。
+
+### `prepareLoadout`：装载准备器
+
+```csharp
+api.RegisterLoadoutPreparer(loadout =>
+{
+    loadout.Descriptions["huge_tool"] = "按需检索文档。";        // 只改声明用的描述
+    loadout.HiddenDeclarations.Add("internal_trace");            // 已激活但不声明
+    return loadout;
+});
+```
+
+- 准备器按注册顺序链式执行，每个准备器拿到上一环结果的副本；返回新对象或就地改写都行。
+- `Descriptions` 只作用于声明面，可调用面与 `All` 不考虑它。
+- `HiddenDeclarations` 里的工具**保持激活且仍可被其它工具调用**，只是不进模型请求的工具清单——这是"撤回声明但保留编排能力"的手段。
+- 准备器抛异常时整体丢弃它这次的改写，装载回退到它之前的结果，不影响后续准备器。
+
+### 调用路径
 
 - 模型调用 → 宿主 → `ToolCall` 事件 → `InvokeToolAsync` → `ToolResult` 事件。
 - 扩展调用扩展 → `ctx.ExecuteToolAsync(name, json)`，走同一条事件链（`Runtime.ExecuteToolAsync`）。
 - 宿主已经自行分发过事件时用 `Runtime.InvokeToolAsync`，避免重复触发。
 
 单个工具执行抛异常会变成模型可见的错误结果；`ToolCall` 被拦截时返回 `{"error": "<reason>"}`。
+
+### 两个内置编排工具
+
+两者都由运行时自动登记为 `ModelOnly`（声明给模型，不可被其它工具调用），并各自声明 `ToolReach.All()`。
+
+**`tool_search(query, activate?)`** —— 只在存在 `Codemode` 或 `Deferred` 工具时登记。
+
+| 参数 | 语义 |
+|---|---|
+| `query` | 大小写不敏感的子串，匹配工具名、命名空间名/别名、描述；空串匹配全部候选 |
+| `activate` | 默认 true：把**前 10 个**命中项加入激活集合，下一轮即声明给模型 |
+
+返回每个命中的 `{name, namespace, exposure, description, activated}`。它只激活，不执行。
+
+**`codemode({steps: [...]})`** —— 只在存在 `Codemode` 工具、或某个工具声明了 `ToolReach` 时登记。**它不是 JS 引擎**，只是一次调用内的步骤编排：没有脚本、没有变量作用域、没有控制流。
+
+```json
+{ "steps": [
+    { "tool": "mcp__docs__search", "arguments": { "q": "auth" } },
+    { "tool": "mcp__docs__read", "argumentsFrom": { "id": "results.0.id" } }
+] }
+```
+
+- 最多 32 步（`CodemodeTool.MaxSteps`），超出一律拒绝。
+- `argumentsFrom` 是"参数名 → 上一步结果里的点路径"，路径支持数组下标（`results.0.id`）；取不到即整次调用失败。
+- 任何一步失败立即中止，返回 `{"ok":false,"failedStep":n,"error":…,"results":[…]}`；成功返回 `{"ok":true,"results":[…]}`。
+- 每步仍受 `ToolReach` 约束（父工具与 `codemode` 自身的范围都要满足），并且每步都会走完整的 `tool_call`/`tool_result` 事件链——权限回退因此同样覆盖内部步骤。
 
 ## 会话状态
 
@@ -151,9 +318,115 @@ WPF 宿主在每轮结束、命令执行、工具调用后写入 `ConversationRe
 | `plan_step` 工具 | `completeStep` / `approve` |
 | 每轮 | 注入 `## Implementation plan`；未确认时明确写入 "NOT approved" |
 
+## Workflows（JS 工作流）
+
+插件可以把 JavaScript 工作流放在 `workflows/*.js`（默认目录，不递归），或在 manifest 用 `workflows` 声明文件/目录。每个工作流成为一个斜杠命令（`/<name> <arguments>`），返回值以 `CommandResult.Display` 显示、不触发模型轮次；同时在存在工作流时登记一个 `workflow_list` 工具（`ModelOnly`，列出可用的名称与参数）。
+
+```javascript
+export const meta = {
+  name: 'review',                       // 缺省时回退为文件名
+  description: '审查改动并给出结论',
+  arguments: '审查 $ARGUMENTS',          // 参数模板，支持 $ARGUMENTS/$1/$name
+  parameters: ['scope']
+};
+
+const files = await agent('列出这次改动的文件，只回 JSON 数组', {
+  label: 'collect',
+  schema: { type: 'array', items: { type: 'string' } }   // 要求 JSON 输出并校验
+});
+
+const notes = await pipeline(files, async (file, index) => {
+  const text = readFile(file);          // 同步读取，缺失时返回空串
+  return text.length === 0 ? null : await agent(`审查 ${file}`, { label: `file-${index}` });
+});
+
+return notes;
+```
+
+脚本在 **Jint 4.17.0** 沙箱里执行，每次运行都新建 `Engine`，全局状态不跨运行泄漏。可用的全局刻意保持很少：
+
+| 全局 | 语义 |
+|---|---|
+| `agent(prompt, options?)` | 调用一次模型并返回助手文本；`options.schema` 存在时要求 JSON 输出并校验（返回解析后的对象），`options.label` 只用于日志 |
+| `pipeline(items, fn)` | 按顺序串行执行 `await fn(item, index)`，**丢弃 null/undefined**，返回结果数组 |
+| `tool(name, args)` | 调用宿主注册的工具；**先过 `PermissionPolicy`**，Deny 或未获批准的 Ask 返回错误而不执行 |
+| `readFile(path)` | 同步读取工作目录内的文本文件，缺失返回空串 |
+| `readSkill(name)` | 读取 skill 正文；未配置或不存在时返回空串 |
+| `log(msg)`、`console.*` | 写入 `WorkflowRuntimeOptions.Log`，不写 stdout |
+| `meta` | 元数据对象（name、description、parameters、plugin、source） |
+| `arguments` | 调用者参数文本（适配器已渲染占位符） |
+
+边界与限制：
+
+- `MaxSteps`（默认 64）限制 `agent` + `tool` 的**总调用次数**；`Timeout`（默认 60 秒）同时是 JS 引擎的执行上限，`while(true){}` 也会被打断。
+- `eval` / `Function` 动态编译被禁用，递归深度、语句数都有上限。
+- 脚本里的 `import` / `export … from` 会被加载器直接拒绝：沙箱不加载外部模块。单文件上限 200 KB。
+- `readFile` 先按路径段拒绝 `..`（`a..b.txt` 这类名字合法），再把两侧路径逐段解析链接目标后重新做包含检查——根内的 junction/symlink 不能把读取引到根外。链接解析依赖 `File.ResolveLinkTarget`（.NET 6+）；`netstandard2.0` 目标下只有词法检查，该目标下的宿主必须自行保证工作目录里没有逃逸链接。
+- **它不是安全边界**：脚本仍可通过 `tool` / `readFile` 触达宿主能力，沙箱只约束计算与资源消耗。真正的拦截在 `PermissionPolicy`。
+
+## 输出风格
+
+输出风格是带 frontmatter 的 Markdown，正文追加到系统提示，改变措辞与回复结构。来源有两处：插件的 `output-styles/<name>.md`（默认目录）或 manifest 的 `outputStyles`（目录或单个 `.md` 文件，声明后取代默认目录），以及宿主经 `OutputStyleCatalog.FromStyles` 注册。
+
+```markdown
+---
+name: concise
+description: 一段话说完，不列清单。
+keep-coding-instructions: true
+---
+
+回答不超过一个自然段；先给结论，再给必要的原因。
+```
+
+| 字段 | 语义 |
+|---|---|
+| `name` | 风格名；缺失时取文件名 |
+| `description` | 面板与 `/output-style` 列表中的说明；缺失时取正文首个非空行 |
+| `keep-coding-instructions` | 是否保留宿主的编码指令，默认 false |
+| 正文 | 追加到系统提示的内容 |
+
+`OutputStylePrompt.Apply(style, baseSystemPrompt)` 的语义：宿主提示**原样保留在最前面**，其后是 `## Output style: <name>` 标题与正文；`keep-coding-instructions: false` 时额外写入一行 `Coding instructions: suspended` 作为标记，**从不删除宿主的提示**——是否真的丢弃编码指令由宿主决定。
+
+管道侧：`pipeline.OutputStyles` 是汇总后的目录，`pipeline.SelectOutputStyle(name)` 切换（未知名称清空选择）。选中风格后，`PrepareTurnAsync(..., baseSystemPrompt)` 返回的 `SystemPromptOverride` 是"宿主提示 + 风格标题 + 正文"的完整结果，`SystemPromptSections` 则是该结果后面再拼上扩展注入的段落；WPF 宿主按 `SystemPromptOverride` 替换本轮系统提示。`/output-style` 列出可用风格，`/output-style <name>` 选择。
+
+## 权限与信任
+
+两层，缺一不可：
+
+1. **fail-closed 后备**（必须）：`ExtensionPipelineOptions.Permissions` 非 null 时，管道自动激活一个内部扩展，把 `PermissionPolicy` 映射到 `ToolCall` 事件——除 `Allow` 外的判定都写入 `BlockReason`（宿主的直接工具调用例外：`Ask` 会交给第 2 层的交互 seam 决定，嵌套调用没有交互通道，`Ask` 即拒绝）。因为 `tool_call` 覆盖所有分发路径（WPF 模型调用、`codemode` 的每个内部步骤、`ctx.ExecuteToolAsync`、`Runtime.ExecuteToolAsync`、工作流 `tool()`），这一层无法被绕开。它同时注册装载准备器，把判定为 `Deny` 的工具从模型声明中移除。
+2. **交互式确认**（可选）：`pipeline.GuardToolAsync(name, json, execute, confirm)` 在宿主 seam 上把 `Ask` 交给用户；没有 `confirm` 时 `Ask` 按拒绝处理。未配置策略时返回 null，表示宿主直接执行。
+
+规则与判定：
+
+```csharp
+var policy = PermissionPolicy.FromRules(new[]
+{
+    new PermissionRule { Tool = "*",     Decision = PermissionDecision.Allow, Source = "user" },
+    new PermissionRule { Tool = "shell", Decision = PermissionDecision.Ask,   Source = "project" },
+    // ArgumentPattern 匹配参数 JSON 原文（区分大小写）：只有含 "rm -rf" 的 shell 调用被拒绝。
+    new PermissionRule { Tool = "shell", Decision = PermissionDecision.Deny,  Source = "project",
+                         ArgumentPattern = "*rm -rf*" },
+});
+```
+
+- `Tool`：精确名、`*`、或 `<ns>:*` 前缀形式。
+- `Decision`：`Allow` / `Ask` / `Deny`。
+- `ArgumentPattern`：对参数 JSON 的 glob（只支持 `*`），为 null 时不约束参数。
+- 优先级 **deny > ask > allow**；同一优先级内**先出现者获胜**。没有任何规则命中、或工具名未知时返回 `Ask`。
+- `PermissionGate.GuardAsync` 返回工具结果，或被拒绝时的 `{"error":"denied"|"not approved","reason":…}` JSON，两种拒绝都不会执行工具本体。
+
+项目信任在**加载项目插件之前**判定：
+
+```csharp
+var trust = ProjectTrust.Evaluate(workingDirectory, trustedRoots, requireTrust);
+if (trust.IsTrusted) { plugins = PluginCatalog.LoadFromDirectory(directory); }
+```
+
+`requireTrust: false` 直接返回 `Trusted`；否则目录必须位于某个受信任根之下（含根本身）。比较不区分大小写、归一化分隔符、拒绝 `..` 逃逸；`C:/a` 不会信任 `C:/ab`。不受信任时返回 `Untrusted`，并填好 `Reason` 与 `SkippedSources`。WPF 宿主把它接在 `PluginHost` 的首次发现处，结果放在 `AiToolsWpf.LastTrustDecision` 供 UI 显示。
+
 ## Claude Code 插件（声明式层）
 
-同一套目录约定仍然支持：`.claude-plugin/plugin.json`、`commands/*.md`、`skills/<name>/SKILL.md`、`.mcp.json`。
+同一套目录约定仍然支持：`.claude-plugin/plugin.json`、`commands/*.md`、`skills/<name>/SKILL.md`、`.mcp.json`、`output-styles/*.md`、`workflows/*.js`。
 
 ```csharp
 AiToolsWpf.Initialize(new AiToolsWpfOptions
@@ -176,7 +449,7 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 
 ### 插件侧限制
 
-`agents`、`hooks`、`lspServers`、`outputStyles`、`workflows`、`themes`、`monitors`、`channels`、`userConfig` 不执行；加载时以 `Info` 级诊断说明被忽略。无 marketplace、无权限系统：`allowed-tools` 只作为元数据。
+`agents`、`hooks`、`lspServers`、`themes`、`monitors`、`channels`、`userConfig` 仍不执行，加载时以 `Info` 级诊断说明被忽略。`outputStyles` 与 `workflows` 已支持（见「输出风格」与「Workflows」两节）；`allowed-tools` 仍只作为元数据，工具是否放行由 `PermissionPolicy` 决定。
 
 ## 宿主集成（WPF）
 
@@ -187,17 +460,53 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 | `PluginsDirectory` / `Plugins` | Claude Code 插件目录或已加载的插件 |
 | `PluginHostOptions` | 插件命令渲染选项（项目根、超时、短名冲突策略） |
 | `AllowPluginShellExecution` | 是否执行插件正文的 `` !`cmd` ``，默认 false |
+| `RequireProjectTrust` / `TrustedRoots` | 是否要求项目目录位于受信任根下才加载项目插件，默认 false；判定结果见 `AiToolsWpf.LastTrustDecision` |
+| `OutputStyle` | 初始选中的输出风格名；运行时用 `/output-style` 切换 |
+| `Permissions` | 工具权限策略；null 时不启用权限闸门 |
+| `EnableWorkflows` | 是否激活插件工作流，默认 true |
 
-`ChatViewModel` 侧：`Pipeline`、`Commands`、`TryExecuteCommandAsync`、`AvailableCommands`、`IsCommandPaletteOpen`。宿主级命令 `/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help` 由 ViewModel 直接处理，不发送请求。
+`ChatViewModel` 侧：`Pipeline`、`Commands`、`TryExecuteCommandAsync`、`AvailableCommands`、`IsCommandPaletteOpen`。宿主级命令 `/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help`、`/output-style [名称]` 由 ViewModel 直接处理，不发送请求。
+
+### 宿主接线（非 WPF 宿主）
+
+WPF 已内建：`ExtensionPipelineOptions.OutputStyle` / `Permissions` 从同名选项透传，`PrepareTurnAsync` 返回 `SystemPromptOverride`，权限后备扩展自动激活。自建宿主时最小接线：
+
+```csharp
+var pipeline = new ExtensionPipeline(new ExtensionPipelineOptions
+{
+    Plugins = catalogs, OutputStyle = "concise", Permissions = policy, WorkingDirectory = cwd
+});
+
+// 每轮：把宿主提示传进来，拿回已拼接好的完整提示。
+var turn = await pipeline.PrepareTurnAsync(context, model, ct, baseSystemPrompt);
+var systemPrompt = turn.SystemPromptOverride ?? baseSystemPrompt;
+
+// 工具调用：ToolCall 事件已兜底，这里只负责把 Ask 变成交互确认。
+var text = pipeline.GuardToolAsync(call.Name, call.ArgumentsJson, RunAsync, ConfirmAsync)
+            is { } guarded ? await guarded : await RunAsync();
+
+// 加载项目插件前：
+var trust = ProjectTrust.Evaluate(cwd, trustedRoots, requireTrust);
+```
 
 ## 与 Pi 的差异
 
 | Pi | 本项目 |
 |---|---|
-| TypeScript + `jiti`，扩展是文件 | C# 类，编译期注册；无热重载 |
-| `context` / `context_with_system` / provider 钩子 | 未实现：只到 `BeforeAgentStart` 粒度 |
-| `tool_execution_start/update/end`、`provider_stream_event` | 未实现 |
-| `ctx.ui`（select/confirm/input） | 仅 `Notify` 与 `AppendMessage`；WPF 侧映射为状态栏/气泡 |
-| `appendEntry`、分支感知状态重建 | 用 `ExtensionStateStore` + `ConversationRecord.ExtensionState` 代替，`/fork` 直接复制 |
-| `registerProvider` / `registerMcpServer` / `registerVirtualModel` | 未实现；MCP 仍由插件声明或宿主注册 |
-| 工具 render 钩子 | 未实现（WPF 只有工具 chip） |
+| TypeScript + `jiti`，扩展是磁盘文件、可自加载 | C# 类，编译期注册；`ReloadAsync` 提供热重载，但**不扫描磁盘**（热加载 C# 扩展仍未实现） |
+| `context` / `context_with_system` | 已实现（`ContextEvent`） |
+| `before_provider_headers` / `before_provider_request` / `after_provider_response` | 已实现（经 `IAiHttpObserver`） |
+| `provider_stream_event` | 已实现（只读；SSE 与 NDJSON 都上报，`[DONE]` 也计入） |
+| `tool_execution_start/update/end` | 已实现；`Update` 只有显式上报时才触发（当前内置工具不上报增量） |
+| `ctx.ui`（select/confirm/input） | 已实现（`IExtensionUi`；WPF 用模态窗口，无 UI 时退化） |
+| `appendEntry`、分支感知状态 | `AppendEntry` 已实现（状态桶 + 会话持久化）；分支重建靠 `/fork` 复制快照 |
+| `registerProvider` / `registerMcpServer` / `registerVirtualModel` | 已实现 |
+| 工具 render 钩子 | 已实现（`RegisterToolRenderer`，WPF 用于工具 chip） |
+| `prepareLoadout` | 已实现（`RegisterLoadoutPreparer`：`Descriptions` / `HiddenDeclarations`，抛异常的准备器被跳过） |
+| `namespace` | 已实现（`ToolNamespace` + `RegisterNamespace`；`my-docs` ≡ `my_docs`） |
+| `exposure: codemode` / `tool_search` | 已实现（五种曝光 + `ActivateTool`/`SetActiveTools`；内置 `tool_search` 与 `codemode`） |
+| `workflows` | 已实现（Jint 沙箱、`workflows/*.js`、`workflow_list`） |
+| `outputStyle` | 已实现（`output-styles/*.md` 与 manifest `outputStyles`；`/output-style` 切换，正文追加而非替换系统提示） |
+| 权限/信任模型（`project_trust`） | 已实现（`ProjectTrust` 判定 + `PermissionPolicy` 规则引擎 + fail-closed 的 `tool_call` 后备 + 可交互的 `GuardToolAsync`） |
+| 终端 TUI 组件、themes、monitors、channels | 未实现 |
+| `codemode` 的语义 | **不同**：Pi 的 `codemode` 让模型写 JS 调用工具；这里的 `codemode` 只是步骤编排（`{steps:[…]}` + `argumentsFrom`），没有 JS 引擎 |

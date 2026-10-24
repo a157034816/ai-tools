@@ -879,6 +879,10 @@ public sealed class ChatViewModel : ObservableObject
                 ShowCommandHelp(arguments);
                 return true;
 
+            case "output-style":
+                ShowOutputStyles(arguments);
+                return true;
+
             case "settings":
                 RequestOpenSettings();
                 return true;
@@ -962,7 +966,7 @@ public sealed class ChatViewModel : ObservableObject
 
         var lines = new List<string>
         {
-            "会话命令：/resume · /fork · /new · /clear · /settings · /help [关键字]"
+            "会话命令：/resume · /fork · /new · /clear · /settings · /help [关键字] · /output-style [名称]"
         };
 
         if (matched.Length == 0)
@@ -981,6 +985,62 @@ public sealed class ChatViewModel : ObservableObject
         AppendAssistantBubble(string.Join(Environment.NewLine, lines));
         SetStatus($"共 {matched.Length} 个命令。", StatusKind.Info);
     }
+
+    /// <summary>显示可用的输出风格，或选择指定风格。</summary>
+    private void ShowOutputStyles(string name)
+    {
+        var pipeline = _pipeline;
+        if (pipeline == null && AiToolsWpf.IsInitialized)
+        {
+            pipeline = AiToolsWpf.Pipeline;
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            if (pipeline == null)
+            {
+                AppendAssistantBubble("扩展管道未启用，当前没有可用的输出风格。");
+                SetStatus("没有可用的输出风格。", StatusKind.Info);
+                return;
+            }
+
+            var lines = new List<string>
+            {
+                "当前输出风格：" + (pipeline.SelectedStyle.Style?.Name ?? "无"),
+                "可用输出风格："
+            };
+            lines.AddRange(pipeline.OutputStyles.Styles.Select(style => "  " + style.Name + " — " + style.Description));
+            if (pipeline.OutputStyles.Count == 0)
+            {
+                lines.Add("  （无）");
+            }
+
+            AppendAssistantBubble(string.Join(Environment.NewLine, lines));
+            SetStatus("已列出输出风格。", StatusKind.Info);
+            return;
+        }
+
+        if (pipeline == null)
+        {
+            AppendAssistantBubble("扩展管道未启用，无法选择输出风格。");
+            SetStatus("无法选择输出风格。", StatusKind.Warning);
+            return;
+        }
+
+        var style = pipeline.OutputStyles.TryGet(name);
+        if (style == null)
+        {
+            var available = string.Join(", ", pipeline.OutputStyles.Styles.Select(item => item.Name));
+            AppendAssistantBubble("未知输出风格：" + name.Trim() + (available.Length == 0 ? "。" : "。可用风格：" + available));
+            SetStatus("未知输出风格。", StatusKind.Warning);
+            return;
+        }
+
+        var changed = pipeline.SelectOutputStyle(style.Name);
+        AppendAssistantBubble(changed ? "已选择输出风格：" + style.Name : "当前输出风格已是：" + style.Name);
+        SetStatus(changed ? "输出风格已更新。" : "输出风格未更改。", StatusKind.Success);
+    }
+
 
     private void InsertSlashPrefix()
     {
@@ -1073,6 +1133,17 @@ public sealed class ChatViewModel : ObservableObject
             return;
         }
 
+        // ctx.Ui：通知直接进状态栏，对话框使用模态窗口（无 UI 宿主退化为非交互）。
+        _pipeline.Ui = new AiTools.Wpf.Extensions.WpfExtensionUi(
+            (message, kind) => SetStatus(message, kind switch
+            {
+                AiTools.Extensions.ExtensionNoticeKind.Success => StatusKind.Success,
+                AiTools.Extensions.ExtensionNoticeKind.Warning => StatusKind.Warning,
+                AiTools.Extensions.ExtensionNoticeKind.Error => StatusKind.Error,
+                _ => StatusKind.Info
+            }),
+            text => SetStatus(text ?? string.Empty, StatusKind.Info));
+
         RefreshAvailableCommands();
 
         _pluginSkillProvider = AiToolsWpf.PluginSkillProvider;
@@ -1118,8 +1189,10 @@ public sealed class ChatViewModel : ObservableObject
             SessionId = CurrentConversationId,
             Messages = _history.Select(entry => entry.Message).ToArray(),
             WorkingDirectory = context.WorkingDirectory,
+            Ui = context.Ui,
             Notify = context.Notify,
-            AppendAssistantMessage = context.AppendAssistantMessage
+            AppendAssistantMessage = context.AppendAssistantMessage,
+            EntryStore = context.EntryStore
         };
     }
 
@@ -1263,9 +1336,21 @@ public sealed class ChatViewModel : ObservableObject
                 var preparation = await _pipeline.PrepareTurnAsync(
                     CreateExtensionContext(),
                     model.Id,
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None,
+                    systemPrompt).ConfigureAwait(false);
 
-                if (!string.IsNullOrWhiteSpace(preparation.SystemPromptSections))
+                if (preparation.SystemPromptOverride is { } systemPromptOverride)
+                {
+                    systemPrompt = systemPromptOverride;
+                    var extensionSections = preparation.SystemPromptSections.StartsWith(systemPromptOverride, StringComparison.Ordinal)
+                        ? preparation.SystemPromptSections.Substring(systemPromptOverride.Length).Trim()
+                        : string.Empty;
+                    if (extensionSections.Length > 0)
+                    {
+                        systemPrompt += "\n\n" + extensionSections;
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(preparation.SystemPromptSections))
                 {
                     systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
                         ? preparation.SystemPromptSections
@@ -1295,6 +1380,24 @@ public sealed class ChatViewModel : ObservableObject
                     : systemPrompt!.TrimEnd() + "\n\n" + skillPrompt;
             }
 
+            // context / context_with_system：扩展可过滤消息或改写系统提示。
+            if (_pipeline != null)
+            {
+                var contextEvent = await _pipeline.ApplyContextHooksAsync(
+                    CreateExtensionContext(),
+                    historySnapshot,
+                    systemPrompt,
+                    model.Id,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                if (!ReferenceEquals(contextEvent.Messages, historySnapshot) && contextEvent.Messages != null)
+                {
+                    historySnapshot = contextEvent.Messages.ToList();
+                }
+
+                systemPrompt = contextEvent.SystemPrompt;
+            }
+
             var toolArray = tools.ToArray();
             ChatRequest request = new()
             {
@@ -1321,12 +1424,35 @@ public sealed class ChatViewModel : ObservableObject
                 }
             }
 
-            var client = AiToolsWpf.CreateChatClient(provider);
+            // 扩展可以注册虚拟模型（路由）与 HTTP 观察器（provider 级钩子）。
+            var router = _pipeline == null
+                ? null
+                : new AiTools.Wpf.Extensions.ExtensionProviderRouter(_pipeline.Runtime, AiToolsWpf.Options.ProviderFactory);
+            var observer = _pipeline?.CreateHttpObserver(CreateExtensionContext);
+
+            var client = router != null
+                ? router.CreateChatClient(provider, model.Id, observer)
+                : AiToolsWpf.CreateChatClient(provider);
 
             async Task<string> InvokeToolAsync(ToolCall call, CancellationToken cancellationToken)
             {
                 AddToolChip(assistantBubble, call);
                 toolCallCount++;
+                var toolStopwatch = Stopwatch.StartNew();
+
+                if (_pipeline != null)
+                {
+                    await _pipeline.Runtime.PublishAsync(
+                        AiTools.Extensions.ExtensionEvent.ToolExecutionStart,
+                        new AiTools.Extensions.ToolExecutionEvent
+                        {
+                            ToolName = call.Name,
+                            ToolCallId = call.Id,
+                            ArgumentsJson = call.ArgumentsJson
+                        },
+                        CreateExtensionContext(),
+                        cancellationToken).ConfigureAwait(false);
+                }
 
                 var registration = registrations.FirstOrDefault(item =>
                     string.Equals(item.Definition.Name, call.Name, StringComparison.OrdinalIgnoreCase));
@@ -1341,18 +1467,7 @@ public sealed class ChatViewModel : ObservableObject
                 if (_pipeline != null)
                 {
                     var context = CreateExtensionContext();
-                    var dispatched = await _pipeline.Runtime.DispatchAsync(
-                        AiTools.Extensions.ExtensionEvent.ToolCall,
-                        callEvent,
-                        context,
-                        failClosed: new AiTools.Extensions.ToolCallEvent
-                        {
-                            ToolName = call.Name,
-                            BlockReason = "tool_call 处理器失败，按安全默认拒绝执行。"
-                        },
-                        cancellationToken).ConfigureAwait(false);
-
-                    callEvent = dispatched as AiTools.Extensions.ToolCallEvent ?? callEvent;
+                    callEvent = await _pipeline.DispatchHostToolCallAsync(callEvent, context, cancellationToken).ConfigureAwait(false);
                     if (!string.IsNullOrEmpty(callEvent.BlockReason))
                     {
                         return JsonSerializer.Serialize(new { error = callEvent.BlockReason });
@@ -1395,7 +1510,23 @@ public sealed class ChatViewModel : ObservableObject
                 string result;
                 try
                 {
-                    result = await RunAsync().ConfigureAwait(false);
+                    var guarded = _pipeline?.GuardToolAsync(
+                        call.Name,
+                        call.ArgumentsJson,
+                        RunAsync,
+                        async prompt =>
+                        {
+                            var ui = _pipeline?.Ui;
+                            return ui != null && await ui.ConfirmAsync(
+                                "确认工具调用",
+                                prompt,
+                                defaultValue: false,
+                                cancellationToken: cancellationToken).ConfigureAwait(false);
+                        });
+
+                    result = guarded == null
+                        ? await RunAsync().ConfigureAwait(false)
+                        : await guarded.ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -1420,7 +1551,23 @@ public sealed class ChatViewModel : ObservableObject
                     failClosed: resultEvent,
                     cancellationToken).ConfigureAwait(false);
 
-                return (transformed as AiTools.Extensions.ToolResultEvent ?? resultEvent).Text;
+                var finalText = (transformed as AiTools.Extensions.ToolResultEvent ?? resultEvent).Text;
+                toolStopwatch.Stop();
+
+                await _pipeline.Runtime.PublishAsync(
+                    AiTools.Extensions.ExtensionEvent.ToolExecutionEnd,
+                    new AiTools.Extensions.ToolExecutionEvent
+                    {
+                        ToolName = call.Name,
+                        ToolCallId = call.Id,
+                        ArgumentsJson = call.ArgumentsJson,
+                        ResultText = finalText,
+                        Duration = toolStopwatch.Elapsed
+                    },
+                    CreateExtensionContext(),
+                    cancellationToken).ConfigureAwait(false);
+
+                return finalText;
             }
 
             ChatResponse response;
@@ -1767,7 +1914,15 @@ public sealed class ChatViewModel : ObservableObject
             arguments = arguments.Substring(0, 180) + "…";
         }
 
-        var display = $"🔧 {call.Name}({arguments})";
+        // 扩展可注册渲染器决定工具标签的显示方式；未认领时用默认格式。
+        var custom = _pipeline?.Runtime.RenderTool(new AiTools.Extensions.ToolRenderContext
+        {
+            ToolName = call.Name,
+            ArgumentsJson = call.ArgumentsJson,
+            IsResult = false
+        });
+
+        var display = custom ?? $"🔧 {call.Name}({arguments})";
         OnUi(() =>
         {
             message.AddToolCall(display);

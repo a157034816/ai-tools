@@ -36,4 +36,9 @@ public class AiHttpOptions
     /// 注意：若设置了超时，应同时设置 HttpClient.Timeout 为 Infinite 以避免与流式读取冲突。
     /// </summary>
     public HttpClient? HttpClient { get; init; }
+
+    /// <summary>
+    /// 可选的请求/流观察器（扩展运行时挂接在此）；为 null 时不产生任何额外开销。
+    /// </summary>
+    public IAiHttpObserver? Observer { get; init; }
 }

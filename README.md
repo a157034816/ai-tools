@@ -23,8 +23,9 @@ Console.WriteLine(response.GetText());
 - **多厂商**：OpenAI（含 DeepSeek、Moonshot/Kimi、通义千问兼容模式、Ollama、vLLM、OpenRouter、Groq 等兼容端点）、Anthropic、Gemini。
 - **完整能力面**：聊天（含流式、多模态、JSON Schema 结构化输出）、函数/工具调用、嵌入、图像生成、语音合成与转录。
 - **MCP 客户端**：stdio / Streamable HTTP / 旧版 HTTP+SSE 三种传输，`McpToolBridge` 一行代码把 MCP 工具变成模型可调用的函数。
-- **可编程扩展**：`IExtension` 注册命令、模型可调用工具（带曝光级别）、生命周期事件与会话状态；内置 `/goal`、`/plan` 两个有状态工作流。
-- **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json` 全部生效，与扩展命令共用同一个 `/` 面板。
+- **可编程扩展**：`IExtension` 注册命令、模型可调用工具（`Direct`/`ModelOnly`/`Codemode`/`Deferred`/`Hidden` 五种曝光 + 激活集合 + `prepareLoadout`/`namespace`）、生命周期事件与会话状态；内置 `tool_search`、`codemode` 编排与 `/goal`、`/plan` 两个有状态工作流。
+- **输出风格 / 权限 / 信任 / 工作流**：`output-styles` 改措辞（`/output-style` 切换）；`PermissionPolicy`（deny > ask > allow）+ `ProjectTrust` 在加载项目插件前判定；Jint 沙箱里的 `workflows/*.js` 成为斜杠命令。
+- **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json`、`output-styles/*.md`、`workflows/*.js` 全部生效，与扩展命令共用同一个 `/` 面板。
 - **生产级细节**：指数退避重试、`Retry-After` 支持、统一异常体系（认证/限流/参数/服务端）、SSE 与 NDJSON 双协议解析、可注入 `HttpClient`。
 - **双目标**：`netstandard2.0` + `net8.0`，既能用于 .NET Framework 4.6.1+ 的老项目，也能享受现代运行时的性能。
 
@@ -39,7 +40,7 @@ Console.WriteLine(response.GetText());
 | `AiTools.Gemini` | Google Gemini API |
 | `AiTools.Mcp` | Model Context Protocol 客户端 |
 | `AiTools.Skills` | Agent Skills：技能发现、渐进式披露与模型可调用的技能加载工具 |
-| `AiTools.Extensions` | Extensions：可编程扩展运行时（命令/工具/事件/会话状态）+ 兼容 Claude Code 的插件加载 |
+| `AiTools.Extensions` | Extensions：可编程扩展运行时（命令/工具/事件/会话状态/输出风格/权限/工作流）+ 兼容 Claude Code 的插件加载 |
 | `AiTools.Wpf` | 可复用 WPF 组件：设置页（供应商/模型配置）+ 对话页，宿主通过全局配置与接口注册 |
 
 典型引用方式：引用所选 Provider + `AiTools.Abstractions`（`Core` 会作为传递依赖自动引入）。
@@ -346,9 +347,20 @@ public sealed class MyExtension : IExtension
 | 能力 | API | 语义 |
 |---|---|---|
 | 命令 | `RegisterCommand` | 返回 `Prompt` / `Display` / `Noop`，可直接结束本轮 |
-| 工具 | `RegisterTool(..., ToolExposure)` | `Direct` / `ModelOnly` / `Deferred` / `Hidden` |
-| 事件 | `On(ExtensionEvent.X, …)` | `Input`、`BeforeAgentStart`、`ToolCall`、`ToolResult`、`TurnEnd`、`SessionStart/Shutdown` |
+| 工具 | `RegisterTool(def, execute, exposure, readOnlyHint, @namespace, reachesTools)` | `Direct` / `ModelOnly` / `Codemode` / `Deferred` / `Hidden`；后两者需 `ActivateTool`/`SetActiveTools` |
+| 编排 | `tool_search` / `codemode` | 查找并激活未声明工具；按 `{steps:[…]}` + `argumentsFrom` 串行调用（非 JS 引擎） |
+| 装载 | `RegisterLoadoutPreparer` / `RegisterNamespace` | 改写声明描述、隐藏声明（仍可调用）；命名空间分组，`my-docs` ≡ `my_docs` |
+| 事件 | `On(ExtensionEvent.X, …)` | `Input`、`BeforeAgentStart`、`Context`、`ToolCall`、`ToolResult`、`ToolExecution*`、`BeforeProviderHeaders`、`BeforeProviderRequest`、`AfterProviderResponse`、`ProviderStreamEvent`、`TurnEnd`、`SessionStart/Shutdown` |
 | 状态 | `ctx.State` | 按扩展名分桶的 JSON，随会话持久化 |
+| 界面 | `ctx.Ui` | 通知/状态栏/确认/输入/选择；无 UI 宿主退化为非交互 |
+| 条目 | `ctx.AppendEntry` | 不进模型上下文的自定义持久化数据 |
+| provider | `RegisterProvider` / `RegisterVirtualModel` | 注册模型服务与虚拟模型路由 |
+| MCP | `RegisterMcpServer` | 连接后工具以 `ext_<server>_<tool>` 并入工具表 |
+| 渲染 | `RegisterToolRenderer` | 自定义工具标签，`null` 交给下一个渲染器 |
+| 输出风格 | `OutputStyleCatalog` / `SelectOutputStyle` | `output-styles/*.md` 正文追加进系统提示；`/output-style` 切换 |
+| 权限/信任 | `PermissionPolicy` / `ProjectTrust` | deny > ask > allow；`tool_call` 后备 fail-closed；加载项目插件前判信任 |
+| 工作流 | `workflows/*.js` | Jint 沙箱，`agent`/`tool`/`pipeline`/`readFile`，成为斜杠命令 + `workflow_list` |
+| 热重载 | `pipeline.ReloadAsync()` | 关连接 → shutdown → 重新激活 → restart，状态保留 |
 
 事件按注册顺序执行、转换类链式组合、拦截类 fail-closed。`session_start` 启动资源，`session_shutdown` 幂等释放。
 
@@ -370,7 +382,7 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 });
 ```
 
-`commands/*.md` 与 `skills/*/SKILL.md` 都成为斜杠命令（`/plugin:command`，短名不冲突时也可 `/command`），正文支持 `$ARGUMENTS`、`$1`、`${CLAUDE_PLUGIN_ROOT}` 等占位符；`skills/` 同时经 `load_skill` 交给模型按需加载，`.mcp.json` 声明的服务器自动连接。扩展命令优先于同名插件短名，冲突时面板插入限定名。
+`commands/*.md` 与 `skills/*/SKILL.md` 都成为斜杠命令（`/plugin:command`，短名不冲突时也可 `/command`），正文支持 `$ARGUMENTS`、`$1`、`${CLAUDE_PLUGIN_ROOT}` 等占位符；`skills/` 同时经 `load_skill` 交给模型按需加载，`.mcp.json` 声明的服务器自动连接，`output-styles/*.md` 成为可选风格（`/output-style`），`workflows/*.js` 成为斜杠命令与 `workflow_list` 工具。扩展命令优先于同名插件短名，冲突时面板插入限定名。
 
 详见 [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md)。
 
@@ -486,7 +498,7 @@ src/
   AiTools.Extensions/     可编程扩展运行时 + Claude Code 插件加载
   AiTools.Wpf/            WPF 设置页与对话页
 tests/
-  AiTools.Tests/          344 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
+  AiTools.Tests/          466 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
 samples/
   AiTools.Samples.Console/        可运行的演示程序
   AiTools.Samples.McpDiscovery/   本机 MCP 服务注册表（共享）

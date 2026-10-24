@@ -51,6 +51,12 @@ public sealed class AiToolsPlugin
     /// <summary>获取插件声明的 MCP 服务器。</summary>
     public IReadOnlyList<PluginMcpServer> McpServers { get; init; } = Array.Empty<PluginMcpServer>();
 
+    /// <summary>获取插件提供的输出风格（<c>output-styles/*.md</c> 与 manifest <c>outputStyles</c>）。</summary>
+    public IReadOnlyList<OutputStyle> OutputStyles { get; init; } = Array.Empty<OutputStyle>();
+
+    /// <summary>获取插件提供的工作流（按插件名限定命令）。</summary>
+    public IReadOnlyList<Workflows.WorkflowDefinition> Workflows { get; init; } = Array.Empty<Workflows.WorkflowDefinition>();
+
     /// <summary>获取加载该插件时产生的诊断。</summary>
     public IReadOnlyList<PluginDiagnostic> Diagnostics { get; init; } = Array.Empty<PluginDiagnostic>();
 

@@ -102,9 +102,14 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 | `RequestBuilder` | 自定义请求构建钩子（返回 null 用默认逻辑） |
 | `OnTurnCompleted` | 每轮完成后的回调（日志/遥测） |
 | `PluginsDirectory` | 插件目录（Claude Code 格式）；目录本身是插件时按单个插件加载，否则递归发现 |
-| `Extensions` | 直接传入已加载的 `PluginCatalog`，优先于 `PluginsDirectory` |
-| `ExtensionOptions` | 插件命令行为（项目根、数据目录、超时、短名冲突策略） |
+| `Plugins` | 直接传入已加载的 `PluginCatalog`，优先于 `PluginsDirectory` |
+| `Extensions` | 要激活的 `IExtension` 集合；null 时用内置 `GoalExtension` + `PlanExtension` |
+| `PluginHostOptions` | 插件命令行为（项目根、数据目录、超时、短名冲突策略） |
 | `AllowPluginShellExecution` | 是否执行命令正文里的 `` !`cmd` `` 注入，默认 false |
+| `RequireProjectTrust` / `TrustedRoots` | 项目插件加载前的信任判定；结果见 `AiToolsWpf.LastTrustDecision` |
+| `OutputStyle` | 初始输出风格名（`/output-style` 切换） |
+| `Permissions` | 工具权限策略；null 时不启用闸门 |
+| `EnableWorkflows` | 是否激活插件工作流，默认 true |
 
 ## 对话页功能
 
@@ -151,7 +156,7 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 });
 ```
 
-扩展用 C# 注册命令/工具/事件，状态随 `ConversationRecord.ExtensionState` 一起保存与恢复（`/resume` 恢复、`/fork` 复制、`/new` 清空）。插件提供的 `commands/*.md` 与 `skills/*/SKILL.md` 同样成为斜杠命令，`skills` 经 `load_skill` 按需加载，`.mcp.json` 服务器自动连接。完整语义见 [`EXTENSIONS.md`](EXTENSIONS.md)。
+扩展用 C# 注册命令/工具/事件，状态随 `ConversationRecord.ExtensionState` 一起保存与恢复（`/resume` 恢复、`/fork` 复制、`/new` 清空）。插件提供的 `commands/*.md` 与 `skills/*/SKILL.md` 同样成为斜杠命令，`skills` 经 `load_skill` 按需加载，`.mcp.json` 服务器自动连接，`output-styles/*.md` 经 `/output-style` 选择，`workflows/*.js` 成为斜杠命令与 `workflow_list` 工具。工具调用经 `PermissionPolicy` 的 `tool_call` 后备与 `GuardToolAsync` 交互确认；项目插件在 `RequireProjectTrust` 下先过一次 `ProjectTrust` 判定。完整语义见 [`EXTENSIONS.md`](EXTENSIONS.md)。
 
 ## 设置页功能
 
