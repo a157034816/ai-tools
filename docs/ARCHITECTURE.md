@@ -9,9 +9,26 @@ AiTools.Core           ← HTTP、SSE/NDJSON、重试、错误映射、流式聚
 AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
                                                     ▲
                     AiTools.Skills ──► AiTools.Extensions ──► AiTools.Wpf
+                                             ▲
+                              AiTools.Extensions.Scripting   （net8.0 专用，可选）
 ```
 
 依赖方向严格单向：Provider 依赖 Core，Core 依赖 Abstractions，Abstractions 不依赖任何项目。
+
+**`AiTools.Extensions.Scripting` 的硬约束：它依赖 `AiTools.Extensions`，反向绝不成立。**
+
+| | `AiTools.Extensions` | `AiTools.Extensions.Scripting` |
+|---|---|---|
+| 目标框架 | `netstandard2.0` + `net8.0` | 仅 `net8.0` |
+| 对 Jint 的用法 | 仅 `codemode` / `workflows` 的既有沙箱 | 完整的 JS/TS 扩展宿主（`ScriptExtension`、`ScriptExtensionProvider`） |
+| 对核心的依赖 | 无（不引用 Scripting） | 引用 `AiTools.Extensions` |
+| 是否必需 | 是 | 否，宿主按需注入 |
+
+核心只暴露接缝 `IScriptExtensionProvider`（定义在 `AiTools.Extensions/Packages/`），由宿主把
+`ScriptExtensionProvider` 实例塞进 `ExtensionWorkspaceOptions.ScriptProvider`。
+这样 `AiTools.Extensions` 保持 netstandard2.0 可编译、不绑定 net8-only 的转译器，也不把 Jint 的
+新 API 需求传染给老目标；没有注入提供者时，脚本包只会得到一条
+`No IScriptExtensionProvider is configured for the <kind> package.` 诊断，C# 包不受影响。
 
 ## 分层职责
 
@@ -91,6 +108,21 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 | `CommandCatalog.cs` | 合并扩展命令与插件命令，全名精确优先、短名冲突检测 |
 | `BuiltIn/GoalExtension.cs` | `/goal` + `goal_plan` / `goal_update` + 每轮目标注入 |
 | `BuiltIn/PlanExtension.cs` | `/plan` + `plan_save` / `plan_step` + 每轮计划注入 |
+| `BuiltIn/ExtensionManagerExtension.cs` | `/extension` 子命令：`list`/`scan`/`install`/`update`/`remove`/`reload`/`build` |
+
+**扩展包子系统（`Packages/`）**
+
+| 文件 | 内容 |
+|---|---|
+| `ExtensionPackageManifest.cs` | `extension.json` 解析：`name`/`kind`/`entry`/`project`/`output`/`require`/`keywords`/`metadata`/`repository`/`license` 等；未知 `kind` 降级为按文件推断并给 `Warning` |
+| `ExtensionWorkspace.cs` | 扫描根目录的**直接子目录**、按 `require` 拓扑排序、`ScanAsync`/`ReloadPackageAsync`/`BuildPackageAsync`/`ReloadAllAsync`、`FileSystemWatcher` 防抖自动重载、`Diagnostics` |
+| `ExtensionPackageLoader.cs` | 单包加载：清单校验（kebab-case、≤64 字符、重名）→ 构建/转译 → 组装扩展实例；失败一律转成 `PluginDiagnostic` |
+| `ExtensionPackageBuilder.cs` | C#：`dotnet build -c Release -o <output>/<ticks> -m:1 -nodeReuse:false`；脚本：委托给 `IScriptExtensionProvider.PrepareAsync`；`PruneBuildDirectories(keep: 3)` |
+| `ExtensionAssemblyLoader.cs` | net8.0 用可回收 `AssemblyLoadContext` + `AssemblyDependencyResolver`，把宿主程序集交还宿主；netstandard2.0 退回 `Assembly.LoadFrom` 并警告不可卸载 |
+| `ExtensionSourceManager.cs` | Git 源码：`InstallAsync`（`git clone --depth 1`）、`UpdateAsync`（`git pull --ff-only`）、`RemoveAsync`（校验 Git 工作树） |
+| `ExtensionPackage.cs` | 单个包的状态：`Manifest`、`Diagnostics`、`Extensions`、`IsLoaded`、`Unload()` |
+| `IExtensionFactory.cs` | `IExtensionFactory` / `IExtensionFactoryContext`（包名、包目录、数据目录、宿主版本、诊断回调） |
+| `IScriptExtensionProvider.cs` | `IScriptExtensionProvider` / `ScriptExtensionPreparation`：脚本包的转译与 `IExtension` 构造接缝 |
 
 **插件层**
 
@@ -113,7 +145,10 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 - **单遍替换**：插件命令的参数与 shell 输出不会被二次扫描。
 - **权限 fail-closed**：`PermissionPolicy` 经 `tool_call` 事件生效，覆盖模型调用、`codemode` 脚本的嵌套调用、`ctx.ExecuteToolAsync`、`Runtime.ExecuteToolAsync` 与工作流 `tool()`；`Ask` 没有确认通道即拒绝。项目资源在 `ProjectTrust` 判定为 `Untrusted` 时不加载。
 - **工作流沙箱只约束资源，不是安全边界**：`eval`/`Function` 禁用、步数与时长有上限，但脚本仍可通过 `tool`/`readFile` 触达宿主能力，拦截靠上一条。
-- **加载不抛异常**：清单非法 → `Error` 且插件不加载；路径越界、重名、缺文件 → `Warning`；不支持的组件 → `Info`。
+- **加载不抛异常**：清单非法 → `Error` 且插件不加载；路径越界、重名、缺文件 → `Warning`；不支持的组件 → `Info`。扩展包同样遵守这条：`ExtensionPackageLoader.LoadAsync` 无论成败都返回带诊断的 `ExtensionPackage`。
+- **构建产物隔离**：C# 包每次构建到 `bin/ext/<ticks>/` 新目录（Windows 上已加载程序集的文件被锁定，旧目录必须保持原样直到 `AssemblyLoadContext.Unload()`），只保留最近 3 份。
+- **状态跨重载存活**：`ExtensionWorkspace` 重载时走 `Runtime.Reset()`，它清空注册表但**不清空** `ExtensionStateStore`；被丢弃的是 `AssemblyLoadContext`、Jint 引擎与 `ExtensionSession` 上下文。
+- **脚本包依赖注入而非反向引用**：`AiTools.Extensions` 只定义 `IScriptExtensionProvider` 接缝，具体实现（Jint + 内置 TypeScript 转译）在 net8-only 的 `AiTools.Extensions.Scripting` 里，由宿主注入。
 
 ## 线程与生命周期
 

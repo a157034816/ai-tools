@@ -1,6 +1,25 @@
 # Extensions（可编程扩展）
 
-`AiTools.Extensions` 有两层，二者共用同一个调用面：
+## 三个容易混淆的名字
+
+`AiTools.Extensions` 里现在同时存在三种东西，名字相近但完全不同，先分清它们：
+
+| 名称 | 形态 | 加载方式 |
+|---|---|---|
+| **Extension**（代码扩展） | C# 类实现 `IExtension` | 宿主直接引用（`AiToolsWpfOptions.Extensions`）**或**来自扩展包 |
+| **Extension Package**（扩展包） | 磁盘目录 + 根部的 `extension.json` | `ExtensionWorkspace` 扫描 / 构建 / 热重载；C#、JS、TS 三种 `kind` |
+| **Plugin**（Claude Code 插件） | `plugin.json` + `commands/*.md` + `skills/*/SKILL.md` + `.mcp.json` + `output-styles/*.md` + `workflows/*.js` | `PluginCatalog` / `PluginHost` |
+
+关键区别：
+
+- **Plugin 是 Claude Code 兼容层，不是扩展生态。** 它加载的是别人已经写好的 Markdown 插件包，扩展的是提示词与命令目录；它不能注册 C#/JS 代码、不能持有会话状态、不参与热重载。
+- **Extension Package 是扩展的分发形式。** 一个包最终产出的仍然是 `IExtension` 实例（C# 或脚本），所以「包」与「扩展」不是并列关系：包是外壳，扩展是内容。
+- **Extension 是运行时概念。** 直接 `new MyExtension()` 传给宿主、或写进 `AiToolsWpfOptions.Extensions`，与从包里加载得到的对象在运行时完全等价。
+
+本页其余部分讲 Extension 运行时与 Plugin 兼容层；**如何写一个扩展包**见
+[`EXTENSIONS_AUTHORING.md`](EXTENSIONS_AUTHORING.md)。
+
+## 两层调用面
 
 | 层 | 形态 | 适合 |
 |---|---|---|
@@ -26,7 +45,14 @@ ExtensionPipeline          宿主唯一入口：命令目录、工具表、会�
 ├── PermissionPolicy       规则引擎（deny > ask > allow）+ PermissionGate 闸门
 │   └── ProjectTrust       加载项目插件前判定 Trusted / Untrusted
 ├── Workflows              Jint 沙箱里的 JS 工作流 → 斜杠命令 + workflow_list 工具
-└── PluginHost             Claude Code 插件的渲染与 MCP 连接
+├── PluginHost             Claude Code 插件的渲染与 MCP 连接
+└── Packages               磁盘扩展包子系统（见 EXTENSIONS_AUTHORING.md）
+    ├── ExtensionWorkspace      扫描根目录、依赖排序、热重载、文件监视、Git 源码
+    ├── ExtensionPackageLoader  单包加载：清单校验 → 构建/转译 → 扩展实例
+    ├── ExtensionPackageBuilder C# 构建到 bin/ext/<ticks>；脚本走 IScriptExtensionProvider
+    ├── ExtensionAssemblyLoader 可回收 AssemblyLoadContext 加载程序集
+    ├── ExtensionSourceManager  git clone / pull --ff-only / remove
+    └── IScriptExtensionProvider 脚本提供者接缝（实现位于 AiTools.Extensions.Scripting）
 ```
 
 ## 编写一个扩展
@@ -103,6 +129,15 @@ ctx.Ui.SetStatus("正在部署…");
 ```
 
 WPF 侧 `WpfExtensionUi` 把通知接到状态栏，`ConfirmAsync` / `InputAsync` / `SelectAsync` 使用模态窗口；无 `Application` 时退化为非交互（确认返回默认值，输入/选择返回 null）。宿主不提供 UI 时 `ctx.Ui` 为 null，扩展必须处理。
+
+### 命令与工具上下文（`CommandContext` / `ToolContext`）
+
+| 成员 | 命令上下文 | 工具上下文 | 行为 |
+|---|---|---|---|
+| `WorkingDirectory` | `CommandContext.WorkingDirectory` | `ToolContext.WorkingDirectory` | Runtime 的显式上下文分发会复制命令工作目录；简化命令调用重载新建上下文时使用 `Environment.CurrentDirectory`。 |
+| `ExecuteToolAsync(...)` | `CommandContext.ExecuteToolAsync` | `ToolContext.ExecuteToolAsync` | 命令上下文调用简化重载；工具上下文嵌套调用优先沿用 `CallContext`，否则从自身 `WorkingDirectory` 创建调用上下文。 |
+
+具体而言，从命令处理器调用 `ctx.ExecuteToolAsync` 会进入不接收 `CommandContext` 的简化重载，因此目标工具看到 `Environment.CurrentDirectory`；从工具处理器嵌套调用时，`ToolContext.ExecuteToolAsync` 沿用 `CallContext`，继承 `ToolContext.WorkingDirectory`。脚本 `ctx.workingDirectory` 遵循相同规则：命令处理器看到会话工作目录，工具处理器看到实际传入的工具上下文目录。若工具要相对项目目录读文件，请通过参数显式传入目录或使用包根，不要在工具可能由命令调用时依赖 `ctx.workingDirectory`。
 
 ### 自定义条目（`appendEntry`）
 

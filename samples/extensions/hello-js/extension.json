@@ -1,0 +1,16 @@
+{
+  "name": "hello-js",
+  "displayName": "Hello JS",
+  "version": "1.0.0",
+  "description": "最小 JavaScript 扩展包：一条带会话计数的命令、一个工具、一段每轮注入的提示词段落，并演示包内 require。",
+  "kind": "javascript",
+  "entry": "index.js",
+  "require": [],
+  "keywords": ["example", "javascript", "hello"],
+  "metadata": {
+    "author": "AiTools Contributors",
+    "docs": "README.md"
+  },
+  "repository": "https://example.com/ai-tools/tree/main/samples/extensions/hello-js",
+  "license": "MIT"
+}

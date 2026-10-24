@@ -209,6 +209,8 @@ public sealed class ToolContext
 
     /// <summary>获取当前会话 ID。</summary>
     public string? SessionId { get; init; }
+    /// <summary>获取当前工作目录（与命令上下文一致）。</summary>
+    public string WorkingDirectory { get; init; } = string.Empty;
 
     /// <summary>获取宿主的交互界面；无 UI 时为 null。</summary>
     public IExtensionUi? Ui { get; init; }
@@ -235,7 +237,7 @@ public sealed class ToolContext
             SessionId = SessionId,
             Ui = Ui,
             EntryStore = EntryStore,
-            WorkingDirectory = Environment.CurrentDirectory
+            WorkingDirectory = string.IsNullOrEmpty(WorkingDirectory) ? Environment.CurrentDirectory : WorkingDirectory
         };
 
         var result = await Runtime

@@ -1,0 +1,4 @@
+bin/
+obj/
+.ai-tools/
+node_modules/

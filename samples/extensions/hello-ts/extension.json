@@ -1,0 +1,16 @@
+{
+  "name": "hello-ts",
+  "displayName": "Hello TypeScript",
+  "version": "1.0.0",
+  "description": "最小 TypeScript 扩展包：带类型的会话计数命令、一个工具、一段每轮注入的提示词段落。",
+  "kind": "typescript",
+  "entry": "index.ts",
+  "require": [],
+  "keywords": ["example", "typescript", "hello"],
+  "metadata": {
+    "author": "AiTools Contributors",
+    "docs": "README.md"
+  },
+  "repository": "https://example.com/ai-tools/tree/main/samples/extensions/hello-ts",
+  "license": "MIT"
+}

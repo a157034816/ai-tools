@@ -1,0 +1,8 @@
+{
+  "name": "fixture-extension",
+  "displayName": "Fixture Extension",
+  "version": "1.0.0",
+  "kind": "CSharp",
+  "project": "FixtureExtension.csproj",
+  "entry": "FixtureExtension.dll"
+}

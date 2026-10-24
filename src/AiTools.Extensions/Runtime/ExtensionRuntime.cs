@@ -26,10 +26,12 @@ public sealed class ExtensionRuntime
     private readonly List<EventSubscription> _subscriptions = new();
     private readonly Dictionary<string, bool> _activationState = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Func<ToolRenderContext, string?>> _toolRenderers = new();
+    private readonly Dictionary<string, List<Func<ToolRenderContext, string?>>> _toolRenderersByOwner = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ExtensionProviderRegistration> _providers = new();
     private readonly List<VirtualModelRegistration> _virtualModels = new();
     private readonly List<PluginMcpServer> _mcpServers = new();
     private readonly List<Func<Task>> _mcpCleanup = new();
+    private readonly Dictionary<string, List<Func<Task>>> _mcpCleanupByOwner = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _activeTools = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<NamespaceRegistration> _namespaces = new();
     private readonly List<LoadoutPreparerRegistration> _loadoutPreparers = new();
@@ -437,8 +439,9 @@ public sealed class ExtensionRuntime
         Func<Task>[] cleanup;
         lock (_gate)
         {
-            cleanup = _mcpCleanup.ToArray();
+            cleanup = _mcpCleanup.Concat(_mcpCleanupByOwner.Values.SelectMany(actions => actions)).ToArray();
             _mcpCleanup.Clear();
+            _mcpCleanupByOwner.Clear();
             _mcpServers.Clear();
         }
 
@@ -499,6 +502,14 @@ public sealed class ExtensionRuntime
         return diagnostics;
     }
 
+    /// <summary>卸载指定扩展并移除其注册的命令、工具、事件和 MCP 声明。</summary>
+    /// <param name="name">扩展名称。</param>
+    public void UnloadExtension(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An extension name is required.", nameof(name));
+        Rollback(name.Trim());
+    }
+
     /// <summary>
     /// 由宿主登记一个外部来源的工具（例如扩展注册的 MCP 服务器）。
     /// 与扩展工具共用同一张表、激活集合与曝光规则。
@@ -546,6 +557,8 @@ public sealed class ExtensionRuntime
             _providers.Clear();
             _virtualModels.Clear();
             _mcpServers.Clear();
+            _mcpCleanupByOwner.Clear();
+            _toolRenderersByOwner.Clear();
             _toolRenderers.Clear();
             _activationState.Clear();
             _activeTools.Clear();
@@ -802,6 +815,7 @@ public sealed class ExtensionRuntime
                 State = State,
                 ParentToolName = parentToolName,
                 SessionId = context.SessionId,
+                WorkingDirectory = context.WorkingDirectory,
                 Ui = context.Ui,
                 EntryStore = context.EntryStore,
                 CallContext = context,
@@ -936,6 +950,7 @@ public sealed class ExtensionRuntime
 
     private void Rollback(string ownerName)
     {
+        Func<Task>[] cleanup;
         lock (_gate)
         {
             var removedTools = _tools
@@ -958,6 +973,28 @@ public sealed class ExtensionRuntime
             _namespaces.RemoveAll(item => string.Equals(item.Owner, ownerName, StringComparison.OrdinalIgnoreCase));
             _loadoutPreparers.RemoveAll(item => string.Equals(item.Owner, ownerName, StringComparison.OrdinalIgnoreCase));
             _activationState.Remove(ownerName);
+            if (_toolRenderersByOwner.TryGetValue(ownerName, out var renderers))
+            {
+                foreach (var renderer in renderers)
+                {
+                    _toolRenderers.Remove(renderer);
+                }
+                _toolRenderersByOwner.Remove(ownerName);
+            }
+            cleanup = _mcpCleanupByOwner.TryGetValue(ownerName, out var actions) ? actions.ToArray() : Array.Empty<Func<Task>>();
+            _mcpCleanupByOwner.Remove(ownerName);
+        }
+
+        for (var index = cleanup.Length - 1; index >= 0; index--)
+        {
+            try
+            {
+                cleanup[index]().GetAwaiter().GetResult();
+            }
+            catch (Exception)
+            {
+                // One owner's MCP cleanup must not prevent other registrations from being released.
+            }
         }
     }
 
@@ -1238,6 +1275,12 @@ public sealed class ExtensionRuntime
             lock (_runtime._gate)
             {
                 _runtime._toolRenderers.Add(renderer);
+                if (!_runtime._toolRenderersByOwner.TryGetValue(Name, out var renderers))
+                {
+                    renderers = new List<Func<ToolRenderContext, string?>>();
+                    _runtime._toolRenderersByOwner[Name] = renderers;
+                }
+                renderers.Add(renderer);
             }
         }
 
@@ -1294,16 +1337,25 @@ public sealed class ExtensionRuntime
                 _runtime._mcpServers.Add(scoped);
             }
 
-            return () =>
+            Func<Task> cleanup = () =>
             {
                 lock (_runtime._gate)
                 {
                     _runtime._mcpServers.RemoveAll(item =>
                         string.Equals(item.QualifiedName, scoped.QualifiedName, StringComparison.OrdinalIgnoreCase));
                 }
-
                 return Task.CompletedTask;
             };
+            lock (_runtime._gate)
+            {
+                if (!_runtime._mcpCleanupByOwner.TryGetValue(Name, out var cleanupActions))
+                {
+                    cleanupActions = new List<Func<Task>>();
+                    _runtime._mcpCleanupByOwner[Name] = cleanupActions;
+                }
+                cleanupActions.Add(cleanup);
+            }
+            return cleanup;
         }
 
         public void RegisterVirtualModel(VirtualModelRegistration registration)

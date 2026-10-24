@@ -1,0 +1,6 @@
+{
+  "name": "script-ts",
+  "displayName": "Script TypeScript fixture",
+  "kind": "typescript",
+  "entry": "index.ts"
+}

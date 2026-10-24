@@ -1,0 +1,16 @@
+{
+  "name": "hello-ts-uses-js",
+  "displayName": "Hello TS uses JS",
+  "version": "1.0.0",
+  "description": "TypeScript 扩展包：通过 manifest 的 require 依赖 hello-js，并用 ctx.executeTool 驱动对方的工具。",
+  "kind": "typescript",
+  "entry": "index.ts",
+  "require": ["hello-js"],
+  "keywords": ["example", "typescript", "dependency"],
+  "metadata": {
+    "author": "AiTools Contributors",
+    "docs": "README.md"
+  },
+  "repository": "https://example.com/ai-tools/tree/main/samples/extensions/hello-ts-uses-js",
+  "license": "MIT"
+}

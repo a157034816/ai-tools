@@ -1,0 +1,6 @@
+{
+  "name": "script-js",
+  "displayName": "Script JavaScript fixture",
+  "kind": "javascript",
+  "entry": "index.js"
+}

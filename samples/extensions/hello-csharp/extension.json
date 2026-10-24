@@ -1,0 +1,17 @@
+{
+  "name": "hello-csharp",
+  "displayName": "Hello C#",
+  "version": "1.0.0",
+  "description": "最小 C# 扩展包：一条带会话计数的命令、一个工具，以及一段每轮注入的提示词段落。",
+  "kind": "csharp",
+  "project": "HelloCSharp.csproj",
+  "output": "bin/ext",
+  "require": [],
+  "keywords": ["example", "csharp", "hello"],
+  "metadata": {
+    "author": "AiTools Contributors",
+    "docs": "README.md"
+  },
+  "repository": "https://example.com/ai-tools/tree/main/samples/extensions/hello-csharp",
+  "license": "MIT"
+}

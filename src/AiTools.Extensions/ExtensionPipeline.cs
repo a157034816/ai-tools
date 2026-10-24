@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AiTools.Abstractions;
 using AiTools.Extensions.Workflows;
+using AiTools.Extensions.Packages;
 
 namespace AiTools.Extensions;
 
@@ -48,9 +49,12 @@ public sealed class ExtensionPipeline : IAsyncDisposable
         OutputStyles = OutputStyleCatalog.LoadFromPlugins(Plugins ?? PluginCatalog.FromPlugins(Array.Empty<AiToolsPlugin>()));
         SelectedStyle = OutputStyleSelection.Resolve(OutputStyles, options.OutputStyle);
 
+        Workspace = Options.Workspace;
+        Workspace?.AttachPipeline(this);
+
         // 与 Pi 的工厂语义一致：扩展在构造阶段登记命令与工具，
         // session_start 只负责启动资源，因此命令表在这里就能完整建立。
-        foreach (var extension in Options.Extensions)
+        foreach (var extension in GetConfiguredExtensions())
         {
             _activationDiagnostics.AddRange(Runtime.Activate(extension));
         }
@@ -75,6 +79,10 @@ public sealed class ExtensionPipeline : IAsyncDisposable
             _activationDiagnostics.AddRange(Runtime.Activate(new PipelinePermissionBackstopExtension(
                 Options.Permissions,
                 CreateUniqueExtensionName("ai-tools-permission-backstop"))));
+        }
+        if (Options.Workspace != null)
+        {
+            _activationDiagnostics.AddRange(Runtime.Activate(new BuiltIn.ExtensionManagerExtension(Workspace)));
         }
     }
 
@@ -114,6 +122,32 @@ public sealed class ExtensionPipeline : IAsyncDisposable
 
     /// <summary>获取当前选中的输出风格。</summary>
     public OutputStyleSelection SelectedStyle { get; private set; } = OutputStyleSelection.None;
+    /// <summary>获取关联的磁盘扩展工作区；未配置时为 null。</summary>
+    public ExtensionWorkspace? Workspace { get; }
+
+    /// <summary>扫描并加载配置的磁盘扩展工作区。</summary>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>发现的扩展包；未配置工作区时为空集合。</returns>
+    public async Task<IReadOnlyList<ExtensionPackage>> LoadWorkspaceAsync(CancellationToken cancellationToken = default)
+        => Workspace == null ? Array.Empty<ExtensionPackage>() : await Workspace.ScanAsync(cancellationToken).ConfigureAwait(false);
+
+    /// <summary>重新加载工作区中的一个扩展包。</summary>
+    /// <param name="name">包名称。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>重载后的包；未配置工作区或名称不存在时为 null。</returns>
+    public Task<ExtensionPackage?> ReloadPackageAsync(string name, CancellationToken cancellationToken = default)
+        => Workspace == null ? Task.FromResult<ExtensionPackage?>(null) : Workspace.ReloadPackageAsync(name, cancellationToken);
+
+    private IReadOnlyList<IExtension> GetConfiguredExtensions()
+    {
+        var extensions = new List<IExtension>(Options.Extensions);
+        foreach (var extension in Workspace?.GetExtensions() ?? Array.Empty<IExtension>())
+        {
+            if (!extensions.Any(existing => ReferenceEquals(existing, extension))) extensions.Add(extension);
+        }
+        return extensions;
+    }
+
 
     /// <summary>按名称选择输出风格；不存在的名称会清除当前选择。返回选择是否变化。</summary>
     /// <param name="name">风格名称；null 或未知名称清除当前选择。</param>
@@ -289,10 +323,8 @@ public sealed class ExtensionPipeline : IAsyncDisposable
     {
         await Runtime.CloseMcpServersAsync().ConfigureAwait(false);
         await Session.ShutdownAsync().ConfigureAwait(false);
-        if (_pluginHost != null)
-        {
-            await _pluginHost.DisposeAsync().ConfigureAwait(false);
-        }
+        if (Workspace != null) await Workspace.DisposeAsync().ConfigureAwait(false);
+        await _mcpHost.DisposeAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -630,32 +662,45 @@ public sealed class ExtensionPipeline : IAsyncDisposable
     /// 重新激活扩展：先关闭会话（触发 <c>session_shutdown</c>），清空注册表，再重新登记并启动。
     /// 用于开发期热重载。旧运行时上的状态会被保留（同一 <see cref="ExtensionStateStore"/>）。
     /// </summary>
-    /// <param name="extensions">新的扩展集合。</param>
+    /// <param name="extensions">要替换的显式扩展集合；未提供时使用选项集合。</param>
     /// <param name="sessionId">会话 ID。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     public async Task<IReadOnlyList<PluginDiagnostic>> ReloadAsync(
         IReadOnlyList<IExtension>? extensions = null,
-        string? sessionId = null)
+        string? sessionId = null,
+        CancellationToken cancellationToken = default)
     {
         await Runtime.CloseMcpServersAsync().ConfigureAwait(false);
         await Session.ShutdownAsync().ConfigureAwait(false);
         Runtime.Reset();
         _activationDiagnostics.Clear();
 
-        var next = extensions ?? Options.Extensions;
-        foreach (var extension in next)
+        foreach (var extension in GetConfiguredExtensions(extensions))
         {
             _activationDiagnostics.AddRange(Runtime.Activate(extension));
         }
         ActivatePipelineFeatures();
         Commands = CommandCatalog.Create(Runtime, Plugins);
 
-
         var restarted = ExtensionSession.Create(Runtime, Session.WorkingDirectory);
-        await restarted.StartAsync(sessionId ?? Session.SessionId).ConfigureAwait(false);
+        restarted.Ui = Ui;
+        await restarted.StartAsync(sessionId ?? Session.SessionId, cancellationToken).ConfigureAwait(false);
         Session = restarted;
-
+        await ConnectExtensionMcpServersAsync(cancellationToken).ConfigureAwait(false);
         return _activationDiagnostics;
     }
+
+    private IReadOnlyList<IExtension> GetConfiguredExtensions(IReadOnlyList<IExtension>? explicitExtensions)
+    {
+        var extensions = new List<IExtension>(explicitExtensions ?? Options.Extensions);
+        foreach (var extension in Workspace?.GetExtensions() ?? Array.Empty<IExtension>())
+        {
+            if (!extensions.Any(existing => ReferenceEquals(existing, extension))) extensions.Add(extension);
+        }
+        return extensions;
+    }
+    internal void RefreshCommandCatalog() => Commands = CommandCatalog.Create(Runtime, Plugins);
+
 
     /// <summary>构建给模型的插件命令清单（不含扩展命令，扩展命令通过工具暴露）。</summary>
     public string BuildPluginCommandPrompt() => _pluginHost?.BuildSystemPrompt() ?? string.Empty;
@@ -732,4 +777,7 @@ public sealed class ExtensionPipelineOptions
 
     /// <summary>获取或设置工具权限策略；为 null 时不启用权限闸门。</summary>
     public PermissionPolicy? Permissions { get; set; }
+
+    /// <summary>获取或设置磁盘扩展工作区；为 null 时禁用扩展包。</summary>
+    public ExtensionWorkspace? Workspace { get; set; }
 }

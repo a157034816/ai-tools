@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>HelloCSharp</RootNamespace>
+    <AssemblyName>HelloCSharp</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Description>示例扩展包：命令、工具与 BeforeAgentStart 提示词段落。</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 宿主程序集。包被加载时由宿主的 AssemblyLoadContext 提供，构建期只需编译期引用。 -->
+    <ProjectReference Include="..\..\..\src\AiTools.Extensions\AiTools.Extensions.csproj" />
+  </ItemGroup>
+
+</Project>
