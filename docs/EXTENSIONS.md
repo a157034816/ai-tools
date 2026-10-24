@@ -18,7 +18,7 @@ ExtensionPipeline          宿主唯一入口：命令目录、工具表、会�
 │   ├── ExtensionTool      模型可调用，带曝光级别与可达范围
 │   ├── ToolLoadout        装载结果：Declared / Callable / All + 准备器改写
 │   ├── ToolSearchTool     内置 tool_search：查找并激活 Codemode/Deferred 工具
-│   ├── CodemodeTool       内置 codemode：受限的步骤编排（不是 JS 引擎）
+│   ├── CodemodeTool       内置 codemode：Jint 沙箱中的 JavaScript 工具脚本
 │   └── ExtensionSession   session_start / session_shutdown、清理回调
 ├── ExtensionStateStore    按扩展名分桶的 JSON 状态，可选持久化
 ├── CommandCatalog         扩展命令 + 插件命令的统一解析
@@ -169,7 +169,7 @@ var diagnostics = await pipeline.ReloadAsync();
 | `BeforeAgentStart` | 请求发出前 | `BeforeAgentStartEvent`：追加 `PromptSections`、`PrependMessages` |
 | `Context` | provider 请求前 | `ContextEvent`：过滤/改写消息（系统提示不受影响） |
 | `ContextWithSystem` | provider 请求前 | `ContextEvent`：同时改写 `SystemPrompt` |
-| `ToolCall` | 工具调用前 | `ToolCallEvent`：改写 `ArgumentsJson`、`BlockReason` 拦截；覆盖所有分发路径（含 `codemode` 内部步骤与 `ctx.ExecuteToolAsync`） |
+| `ToolCall` | 工具调用前 | `ToolCallEvent`：改写 `ArgumentsJson`、`BlockReason` 拦截；覆盖所有分发路径（含 `codemode` 脚本的嵌套调用与 `ctx.ExecuteToolAsync`） |
 | `ToolResult` | 工具返回后 | `ToolResultEvent`：脱敏/截断 `Text` |
 | `ToolExecutionStart` / `Update` / `End` | 工具生命周期 | `ToolExecutionEvent`：观察参数、增量输出、耗时 |
 | `BeforeProviderHeaders` | 请求头构造后 | `ProviderHeadersEvent`：就地改写请求头 |
@@ -198,7 +198,7 @@ var diagnostics = await pipeline.ReloadAsync();
 | `Deferred` | 激活后 ✅ | ✅（登记即可调用） | 不激活 |
 | `Hidden` | ❌ | ❌ | 不激活，激活是空操作 |
 
-- `Codemode` 与 `Deferred` 的执行语义相同（登记即可被调用），区别只在声明意图：`Codemode` 面向"由 `codemode` 编排"的工具，`Deferred` 面向"只在需要时才被发现"的工具。`tool_search` 两类都搜。
+- `Codemode` 与 `Deferred` 的执行语义相同（登记即可被调用），区别只在声明意图：`Codemode` 面向由 `codemode` JavaScript 脚本调用并列入其描述的工具，`Deferred` 面向只在需要时才被发现的工具。`tool_search` 两类都搜。
 - 激活：`pipeline.ActivateTool(name)` 或 `pipeline.SetActiveTools(names)`（整体替换）。未登记的名字被忽略，`Hidden`/`Direct`/`ModelOnly` 的激活请求返回 false 且无副作用。
 - `Hidden` 用于撤回：登记后既不声明也不可调用；撤回已有工具用 `DeactivateTool`，只从声明面移除用装载准备器的 `HiddenDeclarations`。
 - `pipeline.BuildToolRegistrations()` 只返回 `Declared`；运行时的 `ExecuteToolAsync` 判定 `Callable`。
@@ -248,7 +248,7 @@ api.RegisterLoadoutPreparer(loadout =>
 
 ### 两个内置编排工具
 
-两者都由运行时自动登记为 `ModelOnly`（声明给模型，不可被其它工具调用），并各自声明 `ToolReach.All()`。
+两者都由运行时自动登记为 `ModelOnly`（声明给模型，不可被其它工具调用）；`tool_search` 声明 `ToolReach.All()`，`codemode` 则在每次运行时从脚本推导可达范围。
 
 **`tool_search(query, activate?)`** —— 只在存在 `Codemode` 或 `Deferred` 工具时登记。
 
@@ -259,19 +259,20 @@ api.RegisterLoadoutPreparer(loadout =>
 
 返回每个命中的 `{name, namespace, exposure, description, activated}`。它只激活，不执行。
 
-**`codemode({steps: [...]})`** —— 只在存在 `Codemode` 工具、或某个工具声明了 `ToolReach` 时登记。**它不是 JS 引擎**，只是一次调用内的步骤编排：没有脚本、没有变量作用域、没有控制流。
+**`codemode({script: string, timeoutMs?: integer})`** —— 只在存在 `Codemode` 工具、或某个工具声明了 `ToolReach` 时登记。它在一次性 Jint 沙箱中执行 JavaScript，脚本末尾表达式或顶层 `return` 的值作为结果。
 
 ```json
-{ "steps": [
-    { "tool": "mcp__docs__search", "arguments": { "q": "auth" } },
-    { "tool": "mcp__docs__read", "argumentsFrom": { "id": "results.0.id" } }
-] }
+{
+  "script": "const match = tools.find(tool => tool.name === 'mcp__docs__search'); return match ? await executeTool(match.name, { q: 'auth' }) : null;",
+  "timeoutMs": 10000
+}
 ```
 
-- 最多 32 步（`CodemodeTool.MaxSteps`），超出一律拒绝。
-- `argumentsFrom` 是"参数名 → 上一步结果里的点路径"，路径支持数组下标（`results.0.id`）；取不到即整次调用失败。
-- 任何一步失败立即中止，返回 `{"ok":false,"failedStep":n,"error":…,"results":[…]}`；成功返回 `{"ok":true,"results":[…]}`。
-- 每步仍受 `ToolReach` 约束（父工具与 `codemode` 自身的范围都要满足），并且每步都会走完整的 `tool_call`/`tool_result` 事件链——权限回退因此同样覆盖内部步骤。
+- 沙箱提供 `tools`（本次可达且可调用工具的 `{name, namespace, description}` 清单）、`executeTool(name, args)`、`describeNamespace(name)`（返回命名空间 `Instructions`，未知时为空串）与默认无操作的 `log(message)`。
+- `executeTool` 嵌套调用经过完整的 `tool_call`/`tool_result` 事件链，错误会变成可由脚本捕获的 JavaScript 异常；嵌套调用不添加对话记录。
+- `reachesTools` 使用本地 token-scan 启发式：出现 `tools` 标识符、精确的 `tool_search` 标识符/字符串字面量，或 `<本次可调用工具所属的已知命名空间|别名>.list|.search|.find|.tools` 时推导为 `ToolReach.All()`；否则标识符/字符串字面量与可调用工具名、命名空间名/别名做整 token 匹配，推导为 `ToolReach.Words(...)`。结果再与配置的 `reachesTools` 和父工具可达范围取交集。这不是安全边界；例如 `globalThis["tools"]` 不会触发列举规则。
+- `nestedCalls` 记录只随本次调用结果返回，不跨调用保留；单次最多执行 64 次嵌套调用，第 65 次尝试会中止并报告 `failedCall: 64`。参数超过 8 KiB 会从记录省略；工具结果超过 32 KiB 不写入记录并令 `complete` 为 false。记录始终不含工具结果。
+- `prepareLoadout` 动态把 `Codemode` 曝光工具名加入 codemode 描述。此运行时没有 per-tool `usage` 统计，也未提供 Pi 的 `parentToolCallId`/斜线形式调用 ID 与 `onUpdate` 回调。
 
 ## 会话状态
 
@@ -393,7 +394,7 @@ keep-coding-instructions: true
 
 两层，缺一不可：
 
-1. **fail-closed 后备**（必须）：`ExtensionPipelineOptions.Permissions` 非 null 时，管道自动激活一个内部扩展，把 `PermissionPolicy` 映射到 `ToolCall` 事件——除 `Allow` 外的判定都写入 `BlockReason`（宿主的直接工具调用例外：`Ask` 会交给第 2 层的交互 seam 决定，嵌套调用没有交互通道，`Ask` 即拒绝）。因为 `tool_call` 覆盖所有分发路径（WPF 模型调用、`codemode` 的每个内部步骤、`ctx.ExecuteToolAsync`、`Runtime.ExecuteToolAsync`、工作流 `tool()`），这一层无法被绕开。它同时注册装载准备器，把判定为 `Deny` 的工具从模型声明中移除。
+1. **fail-closed 后备**（必须）：`ExtensionPipelineOptions.Permissions` 非 null 时，管道自动激活一个内部扩展，把 `PermissionPolicy` 映射到 `ToolCall` 事件——除 `Allow` 外的判定都写入 `BlockReason`（宿主的直接工具调用例外：`Ask` 会交给第 2 层的交互 seam 决定，嵌套调用没有交互通道，`Ask` 即拒绝）。因为 `tool_call` 覆盖所有分发路径（WPF 模型调用、`codemode` 脚本的嵌套调用、`ctx.ExecuteToolAsync`、`Runtime.ExecuteToolAsync`、工作流 `tool()`），这一层无法被绕开。它同时注册装载准备器，把判定为 `Deny` 的工具从模型声明中移除。
 2. **交互式确认**（可选）：`pipeline.GuardToolAsync(name, json, execute, confirm)` 在宿主 seam 上把 `Ask` 交给用户；没有 `confirm` 时 `Ask` 按拒绝处理。未配置策略时返回 null，表示宿主直接执行。
 
 规则与判定：
@@ -504,9 +505,9 @@ var trust = ProjectTrust.Evaluate(cwd, trustedRoots, requireTrust);
 | 工具 render 钩子 | 已实现（`RegisterToolRenderer`，WPF 用于工具 chip） |
 | `prepareLoadout` | 已实现（`RegisterLoadoutPreparer`：`Descriptions` / `HiddenDeclarations`，抛异常的准备器被跳过） |
 | `namespace` | 已实现（`ToolNamespace` + `RegisterNamespace`；`my-docs` ≡ `my_docs`） |
-| `exposure: codemode` / `tool_search` | 已实现（五种曝光 + `ActivateTool`/`SetActiveTools`；内置 `tool_search` 与 `codemode`） |
+| `exposure: codemode` / `tool_search` | 已实现（五种曝光 + `ActivateTool`/`SetActiveTools`；内置 `tool_search` 与 JavaScript 沙箱 `codemode`） |
 | `workflows` | 已实现（Jint 沙箱、`workflows/*.js`、`workflow_list`） |
 | `outputStyle` | 已实现（`output-styles/*.md` 与 manifest `outputStyles`；`/output-style` 切换，正文追加而非替换系统提示） |
 | 权限/信任模型（`project_trust`） | 已实现（`ProjectTrust` 判定 + `PermissionPolicy` 规则引擎 + fail-closed 的 `tool_call` 后备 + 可交互的 `GuardToolAsync`） |
 | 终端 TUI 组件、themes、monitors、channels | 未实现 |
-| `codemode` 的语义 | **不同**：Pi 的 `codemode` 让模型写 JS 调用工具；这里的 `codemode` 只是步骤编排（`{steps:[…]}` + `argumentsFrom`），没有 JS 引擎 |
+| `codemode` 的语义 | **部分对齐**：实现了 JavaScript 沙箱、`executeTool`、`describeNamespace` 与嵌套调用事件链；差异：reach 是本地 token/namespace 启发式而非 Pi 的 script-words 规则，`nestedCalls` 仅随单次调用结果返回而非 session-level bounded record，单次最多 64 次嵌套调用；仍无 per-tool `usage` 统计、`parentToolCallId`/`<parent id>/<n>` 调用 ID 或 `{signal, onUpdate}` 桥接 |

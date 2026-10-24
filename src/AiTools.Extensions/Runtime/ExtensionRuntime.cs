@@ -46,6 +46,7 @@ public sealed class ExtensionRuntime
         State = state ?? new ExtensionStateStore();
         _toolSearchTool = ToolSearchTool.Create(this);
         _codemodeTool = CodemodeTool.Create(this);
+        CodemodeTool.Register(this, new ExtensionApi(this, RuntimeOwner));
     }
 
     /// <summary>获取扩展状态存储。</summary>
@@ -551,6 +552,7 @@ public sealed class ExtensionRuntime
             _namespaces.Clear();
             _loadoutPreparers.Clear();
         }
+        CodemodeTool.Register(this, new ExtensionApi(this, RuntimeOwner));
     }
 
     /// <summary>按名称查找命令。</summary>

@@ -23,7 +23,7 @@ Console.WriteLine(response.GetText());
 - **多厂商**：OpenAI（含 DeepSeek、Moonshot/Kimi、通义千问兼容模式、Ollama、vLLM、OpenRouter、Groq 等兼容端点）、Anthropic、Gemini。
 - **完整能力面**：聊天（含流式、多模态、JSON Schema 结构化输出）、函数/工具调用、嵌入、图像生成、语音合成与转录。
 - **MCP 客户端**：stdio / Streamable HTTP / 旧版 HTTP+SSE 三种传输，`McpToolBridge` 一行代码把 MCP 工具变成模型可调用的函数。
-- **可编程扩展**：`IExtension` 注册命令、模型可调用工具（`Direct`/`ModelOnly`/`Codemode`/`Deferred`/`Hidden` 五种曝光 + 激活集合 + `prepareLoadout`/`namespace`）、生命周期事件与会话状态；内置 `tool_search`、`codemode` 编排与 `/goal`、`/plan` 两个有状态工作流。
+- **可编程扩展**：`IExtension` 注册命令、模型可调用工具（`Direct`/`ModelOnly`/`Codemode`/`Deferred`/`Hidden` 五种曝光 + 激活集合 + `prepareLoadout`/`namespace`）、生命周期事件与会话状态；内置 `tool_search`、JavaScript `codemode` 与 `/goal`、`/plan` 两个有状态工作流。
 - **输出风格 / 权限 / 信任 / 工作流**：`output-styles` 改措辞（`/output-style` 切换）；`PermissionPolicy`（deny > ask > allow）+ `ProjectTrust` 在加载项目插件前判定；Jint 沙箱里的 `workflows/*.js` 成为斜杠命令。
 - **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json`、`output-styles/*.md`、`workflows/*.js` 全部生效，与扩展命令共用同一个 `/` 面板。
 - **生产级细节**：指数退避重试、`Retry-After` 支持、统一异常体系（认证/限流/参数/服务端）、SSE 与 NDJSON 双协议解析、可注入 `HttpClient`。
@@ -348,7 +348,7 @@ public sealed class MyExtension : IExtension
 |---|---|---|
 | 命令 | `RegisterCommand` | 返回 `Prompt` / `Display` / `Noop`，可直接结束本轮 |
 | 工具 | `RegisterTool(def, execute, exposure, readOnlyHint, @namespace, reachesTools)` | `Direct` / `ModelOnly` / `Codemode` / `Deferred` / `Hidden`；后两者需 `ActivateTool`/`SetActiveTools` |
-| 编排 | `tool_search` / `codemode` | 查找并激活未声明工具；按 `{steps:[…]}` + `argumentsFrom` 串行调用（非 JS 引擎） |
+| 编排 | `tool_search` / `codemode` | 查找并激活未声明工具；`codemode` 在 Jint 沙箱执行 JavaScript，按脚本推导可达范围并通过 `executeTool` 调用工具 |
 | 装载 | `RegisterLoadoutPreparer` / `RegisterNamespace` | 改写声明描述、隐藏声明（仍可调用）；命名空间分组，`my-docs` ≡ `my_docs` |
 | 事件 | `On(ExtensionEvent.X, …)` | `Input`、`BeforeAgentStart`、`Context`、`ToolCall`、`ToolResult`、`ToolExecution*`、`BeforeProviderHeaders`、`BeforeProviderRequest`、`AfterProviderResponse`、`ProviderStreamEvent`、`TurnEnd`、`SessionStart/Shutdown` |
 | 状态 | `ctx.State` | 按扩展名分桶的 JSON，随会话持久化 |

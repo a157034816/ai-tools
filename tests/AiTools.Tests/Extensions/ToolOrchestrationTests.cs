@@ -338,118 +338,241 @@ public sealed class ToolOrchestrationTests
                 reachesTools: ToolReach.Words("allowed"));
         }));
 
-        var context = Context(runtime);
-        var blocked = await runtime.ExecuteToolAsync("narrow", "{}", context);
+        var blocked = await runtime.ExecuteToolAsync("narrow", "{}", Context(runtime));
         Assert.Contains("outside the reach", blocked.Text);
-
-        var codemode = CodemodeTool.Create(runtime, ToolReach.Words("allowed"));
-        var stepped = await codemode.Execute(
-            new ToolCall("t1", "codemode", """{"steps":[{"tool":"forbidden_tool"}]}"""),
-            ToolContext(runtime),
-            CancellationToken.None);
-        Assert.Contains("outside the reach", stepped);
-    }
-
-    [Fact]
-    public async Task Codemode_RunsStepsAndResolvesArgumentsFromPreviousResult()
-    {
-        var runtime = new ExtensionRuntime();
-        var observed = string.Empty;
-        runtime.Activate(new ProbeExtension("steps", api =>
-        {
-            api.RegisterTool(
-                ToolDefinition.Create("get_item"),
-                (_, _, _) => Task.FromResult("""{"items":[{"id":"abc","name":"n1"}]}"""));
-            api.RegisterTool(
-                ToolDefinition.Create("echo_id"),
-                (call, _, _) =>
-                {
-                    using var document = JsonDocument.Parse(call.ArgumentsJson);
-                    observed = document.RootElement.GetProperty("id").GetString() ?? string.Empty;
-                    return Task.FromResult("{\"id\":\"" + observed + "\"}");
-                });
-        }));
-
-        var codemode = CodemodeTool.Create(runtime);
-        var result = await codemode.Execute(
-            new ToolCall("t1", "codemode", """
-                {"steps":[
-                  {"tool":"get_item"},
-                  {"tool":"echo_id","argumentsFrom":{"id":"result.items.0.id"}}
-                ]}
-                """),
-            ToolContext(runtime),
-            CancellationToken.None);
-
-        using var document = JsonDocument.Parse(result);
-        Assert.True(document.RootElement.GetProperty("ok").GetBoolean());
-        Assert.Equal(2, document.RootElement.GetProperty("results").GetArrayLength());
-        Assert.Equal("abc", observed);
-    }
-
-    [Fact]
-    public async Task Codemode_StepFailureStopsRunAndReportsIndex()
-    {
-        var runtime = new ExtensionRuntime();
-        runtime.Activate(new ProbeExtension("steps", api =>
-        {
-            api.RegisterTool(ToolDefinition.Create("fine"), (_, _, _) => Task.FromResult("ok"));
-            api.RegisterTool(ToolDefinition.Create("bad"), (_, _, _) => throw new InvalidOperationException("boom"));
-        }));
-
-        var codemode = CodemodeTool.Create(runtime);
-        var result = await codemode.Execute(
-            new ToolCall("t1", "codemode", """{"steps":[{"tool":"fine"},{"tool":"bad"},{"tool":"fine"}]}"""),
-            ToolContext(runtime),
-            CancellationToken.None);
-
-        using var document = JsonDocument.Parse(result);
-        Assert.False(document.RootElement.GetProperty("ok").GetBoolean());
-        Assert.Equal(1, document.RootElement.GetProperty("failedStep").GetInt32());
-        Assert.Contains("boom", document.RootElement.GetProperty("error").GetString());
-        Assert.Equal(1, document.RootElement.GetProperty("results").GetArrayLength());
-    }
-
-    [Fact]
-    public async Task Codemode_ReachViolationFailsStep()
-    {
-        var runtime = new ExtensionRuntime();
-        runtime.Activate(new ProbeExtension("steps", api =>
-        {
-            api.RegisterTool(ToolDefinition.Create("allowed_tool"), (_, _, _) => Task.FromResult("ok"));
-            api.RegisterTool(ToolDefinition.Create("forbidden_tool"), (_, _, _) => Task.FromResult("ok"));
-        }));
 
         var codemode = CodemodeTool.Create(runtime, ToolReach.Words("allowed"), "scoped_codemode");
         var result = await codemode.Execute(
-            new ToolCall("t1", "scoped_codemode", """{"steps":[{"tool":"forbidden_tool"}]}"""),
+            new ToolCall("t1", "scoped_codemode", JsonSerializer.Serialize(new { script = "await executeTool('forbidden_tool', {});" })),
             ToolContext(runtime),
             CancellationToken.None);
 
         using var document = JsonDocument.Parse(result);
         Assert.False(document.RootElement.GetProperty("ok").GetBoolean());
-        Assert.Equal(0, document.RootElement.GetProperty("failedStep").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("failedCall").GetInt32());
         Assert.Contains("outside the reach", document.RootElement.GetProperty("error").GetString());
     }
 
     [Fact]
-    public async Task Codemode_RejectsMoreThanMaxSteps()
+    public async Task Codemode_RunsJavaScriptAndReturnsFinalExpression()
     {
         var runtime = new ExtensionRuntime();
-        runtime.Activate(new ProbeExtension("steps", api =>
+        var result = await RunCodemodeAsync(runtime, "const base = 40; base + 2;");
+        var returned = await RunCodemodeAsync(runtime, "return { answer: 42 };");
+
+        Assert.True(result.GetProperty("ok").GetBoolean());
+        Assert.Equal(42, result.GetProperty("result").GetInt32());
+        Assert.True(result.GetProperty("complete").GetBoolean());
+        Assert.Equal(42, returned.GetProperty("result").GetProperty("answer").GetInt32());
+    }
+
+    [Fact]
+    public async Task Codemode_ToolsListsOnlyToolsAllowedByConfiguredUpperBound()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+        {
+            api.RegisterTool(ToolDefinition.Create("named_tool"), (_, _, _) => Task.FromResult(""));
+            api.RegisterTool(ToolDefinition.Create("other_tool"), (_, _, _) => Task.FromResult(""));
+        }));
+
+        var all = await RunCodemodeAsync(runtime, "tools.map(tool => tool.name);");
+        var capped = await RunCodemodeAsync(runtime, "tools.map(tool => tool.name);", ToolReach.Words("named_tool"));
+
+        Assert.True(all.GetProperty("ok").GetBoolean());
+        Assert.Equal(new[] { "named_tool", "other_tool" }, all.GetProperty("result").EnumerateArray().Select(item => item.GetString()).ToArray());
+        Assert.True(capped.GetProperty("ok").GetBoolean());
+        Assert.Equal(new[] { "named_tool" }, capped.GetProperty("result").EnumerateArray().Select(item => item.GetString()).ToArray());
+    }
+
+    [Fact]
+    public async Task Codemode_ExecutesReachableToolsAndRecordsNoResults()
+    {
+        var runtime = new ExtensionRuntime();
+        var callCount = 0;
+        var resultCount = 0;
+        string? callName = null;
+        string? resultName = null;
+        string? observedResult = null;
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+        {
+            api.RegisterTool(ToolDefinition.Create("named_tool"), (_, _, _) => Task.FromResult("result text"));
+            api.On<ToolCallEvent>(ExtensionEvent.ToolCall, (eventArgs, _, _) =>
+            {
+                if (eventArgs.ToolName == "named_tool")
+                {
+                    callCount++;
+                    callName = eventArgs.ToolName;
+                }
+
+                return Task.FromResult<ToolCallEvent?>(eventArgs);
+            });
+            api.On<ToolResultEvent>(ExtensionEvent.ToolResult, (eventArgs, _, _) =>
+            {
+                if (eventArgs.ToolName == "named_tool")
+                {
+                    resultCount++;
+                    resultName = eventArgs.ToolName;
+                    observedResult = eventArgs.Text;
+                }
+
+                return Task.FromResult<ToolResultEvent?>(eventArgs);
+            });
+        }));
+
+        var result = await RunCodemodeAsync(runtime, "await executeTool('named_tool', { value: 7 });");
+
+        Assert.True(result.GetProperty("ok").GetBoolean());
+        Assert.Equal("result text", result.GetProperty("result").GetString());
+        Assert.Equal(1, callCount);
+        Assert.Equal("named_tool", callName);
+        Assert.Equal(1, resultCount);
+        Assert.Equal("named_tool", resultName);
+        Assert.Equal("result text", observedResult);
+        var record = Assert.Single(result.GetProperty("nestedCalls").EnumerateArray());
+        Assert.Equal("named_tool", record.GetProperty("name").GetString());
+        Assert.Equal("success", record.GetProperty("status").GetString());
+        Assert.True(record.GetProperty("durationMs").GetDouble() >= 0);
+        Assert.Equal(7, record.GetProperty("arguments").GetProperty("value").GetInt32());
+        Assert.False(record.TryGetProperty("result", out _));
+    }
+
+    [Fact]
+    public async Task Codemode_UnreachableToolThrowsCatchableJavaScriptError()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+            api.RegisterTool(ToolDefinition.Create("secret_tool"), (_, _, _) => Task.FromResult("secret"))));
+
+        var result = await RunCodemodeAsync(
+            runtime,
+            "try { await executeTool('sec' + 'ret_tool', {}); } catch (error) { return error.message; }");
+
+        Assert.True(result.GetProperty("ok").GetBoolean());
+        Assert.Contains("outside the reach", result.GetProperty("result").GetString());
+        var record = Assert.Single(result.GetProperty("nestedCalls").EnumerateArray());
+        Assert.Equal("error", record.GetProperty("status").GetString());
+        Assert.False(record.TryGetProperty("result", out _));
+    }
+
+    [Fact]
+    public async Task Codemode_NestedCallCapReportsOffendingIndex()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
             api.RegisterTool(ToolDefinition.Create("noop"), (_, _, _) => Task.FromResult("ok"))));
 
-        var steps = string.Join(",", Enumerable.Range(0, CodemodeTool.MaxSteps + 1)
-            .Select(_ => "{\"tool\":\"noop\"}"));
-        var codemode = CodemodeTool.Create(runtime);
-        var result = await codemode.Execute(
-            new ToolCall("t1", "codemode", "{\"steps\":[" + steps + "]}"),
-            ToolContext(runtime),
-            CancellationToken.None);
+        var successful = await RunCodemodeAsync(runtime,
+            "for (let i = 0; i < 64; i++) { await executeTool('noop', {}); } 'done';");
+        var result = await RunCodemodeAsync(runtime,
+            "for (let i = 0; i < 65; i++) { await executeTool('noop', {}); } 'done';");
 
-        using var document = JsonDocument.Parse(result);
-        Assert.False(document.RootElement.GetProperty("ok").GetBoolean());
-        Assert.Contains("32", document.RootElement.GetProperty("error").GetString());
+        Assert.True(successful.GetProperty("ok").GetBoolean());
+        Assert.Equal(64, successful.GetProperty("nestedCalls").GetArrayLength());
+        Assert.True(successful.GetProperty("complete").GetBoolean());
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        Assert.Equal(64, result.GetProperty("failedCall").GetInt32());
+        Assert.Contains("call index 64", result.GetProperty("error").GetString());
+        Assert.Equal(CodemodeTool.MaxNestedCalls, result.GetProperty("nestedCalls").GetArrayLength());
+        Assert.True(result.GetProperty("complete").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Codemode_OmitsOversizedArgumentsAndMarksIncomplete()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+            api.RegisterTool(ToolDefinition.Create("args_tool"), (_, _, _) => Task.FromResult("ok"))));
+        var script = "await executeTool('args_tool', { data: '" + new string('x', CodemodeTool.MaxArgumentBytes) + "' }); 'done';";
+
+        var result = await RunCodemodeAsync(runtime, script);
+
+        Assert.True(result.GetProperty("ok").GetBoolean());
+        Assert.False(result.GetProperty("complete").GetBoolean());
+        var record = Assert.Single(result.GetProperty("nestedCalls").EnumerateArray());
+        Assert.False(record.TryGetProperty("arguments", out _));
+    }
+
+    [Fact]
+    public async Task Codemode_OmitsOversizedToolResultFromRecordAndMarksIncomplete()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+            api.RegisterTool(ToolDefinition.Create("large_tool"), (_, _, _) => Task.FromResult(new string('x', CodemodeTool.MaxResultBytes + 1)))));
+
+        var result = await RunCodemodeAsync(runtime, "const text = await executeTool('large_tool', {}); text.length;");
+
+        Assert.True(result.GetProperty("ok").GetBoolean());
+        Assert.Equal(CodemodeTool.MaxResultBytes + 1, result.GetProperty("result").GetInt32());
+        Assert.False(result.GetProperty("complete").GetBoolean());
+        var record = Assert.Single(result.GetProperty("nestedCalls").EnumerateArray());
+        Assert.False(record.TryGetProperty("result", out _));
+    }
+
+
+    [Fact]
+    public async Task Codemode_DescribeNamespaceReturnsInstructionsOrEmpty()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+        {
+            api.RegisterNamespace(new ToolNamespace { Name = "docs", Instructions = "Read the docs first." });
+            api.RegisterTool(ToolDefinition.Create("read"), (_, _, _) => Task.FromResult(""), @namespace: "docs");
+        }));
+
+        var result = await RunCodemodeAsync(runtime, "[describeNamespace('docs'), describeNamespace('missing')];");
+
+        Assert.True(result.GetProperty("ok").GetBoolean());
+        var values = result.GetProperty("result").EnumerateArray().Select(item => item.GetString()).ToArray();
+        Assert.Equal(new[] { "Read the docs first.", "" }, values);
+    }
+
+    [Fact]
+    public async Task Codemode_ScriptNamesToolAndConfiguredReachCapsIt()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+        {
+            api.RegisterTool(ToolDefinition.Create("named_tool"), (_, _, _) => Task.FromResult("named"));
+            api.RegisterTool(ToolDefinition.Create("other_tool"), (_, _, _) => Task.FromResult("other"));
+        }));
+
+        var allowed = await RunCodemodeAsync(runtime, "await executeTool('named_tool', {});", ToolReach.Words("named_tool"));
+        Assert.True(allowed.GetProperty("ok").GetBoolean());
+        Assert.Equal("named", allowed.GetProperty("result").GetString());
+
+        var capped = await RunCodemodeAsync(runtime, "await executeTool('other_tool', {});", ToolReach.Words("named_tool"));
+        Assert.False(capped.GetProperty("ok").GetBoolean());
+        Assert.Contains("outside the reach", capped.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Codemode_TimeoutInterruptsInfiniteLoop()
+    {
+        var runtime = new ExtensionRuntime();
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = await RunCodemodeAsync(runtime, "while (true) {}", timeoutMs: 1000);
+
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        Assert.Contains("timed out", result.GetProperty("error").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.True(timer.Elapsed < TimeSpan.FromSeconds(5), "The script timeout should stop execution promptly.");
+    }
+
+    [Fact]
+    public void Codemode_PrepareLoadoutDescriptionListsCodemodeTools()
+    {
+        var runtime = new ExtensionRuntime();
+        runtime.Activate(new ProbeExtension("script-tools", api =>
+        {
+            api.RegisterNamespace(new ToolNamespace { Name = "files" });
+            api.RegisterTool(ToolDefinition.Create("read"), (_, _, _) => Task.FromResult(""), ToolExposure.Codemode, @namespace: "files");
+            api.RegisterTool(ToolDefinition.Create("write"), (_, _, _) => Task.FromResult(""), ToolExposure.Codemode, @namespace: "files");
+        }));
+
+        var codemode = Assert.Single(runtime.BuildLoadout().Declared, tool => tool.Definition.Name == CodemodeTool.Name);
+
+        Assert.Equal("Runs a JavaScript script that can call these tools: files.read, files.write.", codemode.Definition.Description);
     }
 
     [Fact]
@@ -460,11 +583,30 @@ public sealed class ToolOrchestrationTests
             api.RegisterTool(ToolDefinition.Create("script_like"), (_, _, _) => Task.FromResult(""), ToolExposure.Codemode)));
 
         Assert.NotNull(runtime.TryGetTool("codemode"));
-        Assert.True(runtime.ToolReachOf("codemode")!.IsAll);
+        Assert.Null(runtime.ToolReachOf("codemode"));
         Assert.True(runtime.ToolReachOf("tool_search")!.IsAll);
         Assert.Contains("codemode", Names(runtime.DeclaredTools));
         Assert.Contains("tool_search", Names(runtime.DeclaredTools));
     }
+
+    private static async Task<JsonElement> RunCodemodeAsync(
+        ExtensionRuntime runtime,
+        string script,
+        ToolReach? reachesTools = null,
+        int? timeoutMs = null)
+    {
+        var tool = CodemodeTool.Create(runtime, reachesTools);
+        var arguments = timeoutMs.HasValue
+            ? JsonSerializer.Serialize(new { script, timeoutMs })
+            : JsonSerializer.Serialize(new { script });
+        var result = await tool.Execute(
+            new ToolCall("codemode-test", tool.Definition.Name, arguments),
+            ToolContext(runtime),
+            CancellationToken.None);
+        using var document = JsonDocument.Parse(result);
+        return document.RootElement.Clone();
+    }
+
 
     [Fact]
     public async Task Pipeline_PrepareTurn_UsesLoadoutDeclarations()

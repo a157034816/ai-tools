@@ -64,7 +64,7 @@ public sealed class ExtensionTool
 /// <summary>工具对模型的曝光方式。语义对齐 Pi。</summary>
 /// <remarks>
 /// “声明”指进入模型请求的工具清单；“可调用”指可被其它工具通过 <c>ctx.ExecuteToolAsync</c>
-/// （或 <c>codemode</c> 的步骤）调用。
+/// （或在 <c>codemode</c> 脚本中通过 <c>executeTool</c>）调用。
 /// </remarks>
 public enum ToolExposure
 {
@@ -75,14 +75,14 @@ public enum ToolExposure
     ModelOnly,
 
     /// <summary>
-    /// 可被其它工具调用，并由 <c>codemode</c> 工具列出；登记后不激活，
-    /// 除非显式激活（<c>ActivateTool</c> 或 <c>tool_search</c>），激活后即声明给模型。
+    /// 可被其它工具调用；只有本次脚本推导范围与配置的 <c>reachesTools</c>、父工具范围都允许时，
+    /// 才列入 <c>codemode</c> 的可达工具清单。登记后不激活，除非显式激活，激活后即声明给模型。
     /// </summary>
     Codemode,
 
     /// <summary>
-    /// 可被其它工具调用，但 <c>codemode</c> 不列出它；登记后不激活，
-    /// 只能由 <c>tool_search</c> 查找并激活，激活后即声明给模型。
+    /// 可被其它工具调用；登记后不激活，除非显式激活（例如 <c>tool_search</c>），
+    /// 激活后即声明给模型。是否列入 codemode 的 <c>tools</c> 清单由本次脚本可达范围决定。
     /// </summary>
     Deferred,
 

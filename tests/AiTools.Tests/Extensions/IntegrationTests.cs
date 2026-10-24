@@ -157,7 +157,7 @@ public sealed class IntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task PermissionBackstop_BlocksDeniedCodemodeSteps()
+    public async Task PermissionBackstop_BlocksDeniedCodemodeScripts()
     {
         var executions = 0;
         var extension = ToolExtensionWithCodemode("secret", () =>
@@ -172,7 +172,7 @@ public sealed class IntegrationTests : IDisposable
         Assert.NotNull(codemode);
 
         var result = await codemode!.Execute(
-            new ToolCall("call-1", "codemode", "{\"steps\":[{\"tool\":\"secret\"}]}"),
+            new ToolCall("call-1", "codemode", "{\"script\":\"await executeTool('secret', {});\"}"),
             new ToolContext { Runtime = pipeline.Runtime, State = pipeline.Runtime.State },
             CancellationToken.None);
 
