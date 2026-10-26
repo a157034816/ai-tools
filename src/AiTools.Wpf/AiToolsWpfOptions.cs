@@ -18,6 +18,12 @@ public sealed class AiToolsWpfOptions
     /// <summary>服务商工厂。默认为 <see cref="BuiltInProviderFactory"/>。</summary>
     public IProviderFactory? ProviderFactory { get; set; }
 
+    /// <summary>
+    /// 可选的模型列表工厂。为 null 时，若 <see cref="ProviderFactory"/> 实现了
+    /// <see cref="IProviderModelCatalogFactory"/> 则复用它；内置工厂默认支持。
+    /// </summary>
+    public IProviderModelCatalogFactory? ProviderModelCatalogFactory { get; set; }
+
     /// <summary>默认 JSON 存储所使用的密钥保护器。默认为 Windows DPAPI。</summary>
     public ISecretProtector? SecretProtector { get; set; }
 

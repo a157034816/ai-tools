@@ -70,6 +70,20 @@ public sealed class SettingsViewModel : ObservableObject
             parameter => TestConnectionAsync(parameter as ProviderEditorViewModel),
             _ => CanEdit);
         ResetSystemPromptCommand = new RelayCommand(ResetSystemPrompt, () => CanEdit);
+        FetchModelsCommand = new AsyncRelayCommand(
+            parameter => FetchModelsAsync(parameter as ProviderEditorViewModel),
+            _ => CanEdit);
+        SelectAllFetchedModelsCommand = new RelayCommand(
+            parameter => SetAllFetchedModels(parameter as ProviderEditorViewModel, selected: true),
+            _ => CanEdit);
+        SelectNoFetchedModelsCommand = new RelayCommand(
+            parameter => SetAllFetchedModels(parameter as ProviderEditorViewModel, selected: false),
+            _ => CanEdit);
+        ApplyFetchedModelsCommand = new RelayCommand(
+            parameter => ApplyFetchedModels(parameter as ProviderEditorViewModel),
+            _ => CanEdit);
+        CloseModelPickerCommand = new RelayCommand(
+            parameter => CloseModelPicker(parameter as ProviderEditorViewModel));
         ConfirmDeleteCommand = new RelayCommand(ConfirmDelete, () => CanEdit && _pendingDelete != null);
         CancelDeleteCommand = new RelayCommand(CancelDelete);
     }
@@ -253,6 +267,21 @@ public sealed class SettingsViewModel : ObservableObject
 
     /// <summary>获取将 <see cref="DefaultSystemPrompt"/> 恢复到 <see cref="SystemPrompt"/> 的 Command。</summary>
     public RelayCommand ResetSystemPromptCommand { get; }
+
+    /// <summary>获取从服务商接口拉取模型列表的 Command。参数为 <see cref="ProviderEditorViewModel"/>。</summary>
+    public AsyncRelayCommand FetchModelsCommand { get; }
+
+    /// <summary>获取把候选模型全部勾选的 Command。参数为 <see cref="ProviderEditorViewModel"/>。</summary>
+    public RelayCommand SelectAllFetchedModelsCommand { get; }
+
+    /// <summary>获取把候选模型全部取消勾选的 Command。参数为 <see cref="ProviderEditorViewModel"/>。</summary>
+    public RelayCommand SelectNoFetchedModelsCommand { get; }
+
+    /// <summary>获取把勾选的候选模型加入配置的 Command。参数为 <see cref="ProviderEditorViewModel"/>。</summary>
+    public RelayCommand ApplyFetchedModelsCommand { get; }
+
+    /// <summary>获取关闭模型选择面板的 Command。参数为 <see cref="ProviderEditorViewModel"/>。</summary>
+    public RelayCommand CloseModelPickerCommand { get; }
 
     /// <summary>获取移除 <see cref="PendingDelete"/> 的 Command。</summary>
     public RelayCommand ConfirmDeleteCommand { get; }
@@ -630,6 +659,106 @@ public sealed class SettingsViewModel : ObservableObject
         }
     }
 
+    internal async Task FetchModelsAsync(ProviderEditorViewModel? editor)
+    {
+        if (editor == null)
+        {
+            return;
+        }
+
+        if (!_isAvailable)
+        {
+            editor.SetModelFetchStatus(ConnectionTestState.Failed, "AiToolsWpf 尚未初始化，无法获取模型列表。");
+            editor.IsModelPickerOpen = true;
+            return;
+        }
+
+        var config = editor.CreateProviderConfig();
+        var errors = ValidateProviderForTest(config);
+        if (errors.Count > 0)
+        {
+            editor.SetModelFetchStatus(ConnectionTestState.Failed, "无法获取：" + string.Join("；", errors));
+            editor.IsModelPickerOpen = true;
+            return;
+        }
+
+        editor.SetFetchingModels(true);
+        editor.SetModelFetchStatus(ConnectionTestState.Running, "正在获取模型列表…");
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var catalog = AiToolsWpf.CreateModelCatalog(config);
+            var models = await catalog.ListModelsAsync(timeout.Token).ConfigureAwait(true);
+            stopwatch.Stop();
+
+            editor.ApplyFetchedModels(models);
+            editor.IsModelPickerOpen = true;
+
+            if (models.Count == 0)
+            {
+                editor.SetModelFetchStatus(ConnectionTestState.Failed, "服务商返回了空的模型列表。");
+            }
+            else
+            {
+                editor.SetModelFetchStatus(
+                    ConnectionTestState.Succeeded,
+                    $"获取到 {models.Count} 个模型 · {stopwatch.ElapsedMilliseconds} ms");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            editor.SetModelFetchStatus(ConnectionTestState.Failed, "获取模型列表超时（20 秒），请检查 Base URL 与网络。");
+            editor.IsModelPickerOpen = true;
+        }
+        catch (AiToolsWpfException ex)
+        {
+            editor.SetModelFetchStatus(ConnectionTestState.Failed, "获取失败：" + ex.Message);
+            editor.IsModelPickerOpen = true;
+        }
+        catch (Exception ex)
+        {
+            editor.SetModelFetchStatus(ConnectionTestState.Failed, "获取失败：" + DescribeError(ex));
+            editor.IsModelPickerOpen = true;
+        }
+        finally
+        {
+            editor.SetFetchingModels(false);
+        }
+    }
+
+    private static void SetAllFetchedModels(ProviderEditorViewModel? editor, bool selected)
+    {
+        editor?.SetAllFetchedSelected(selected);
+    }
+
+    private void ApplyFetchedModels(ProviderEditorViewModel? editor)
+    {
+        if (editor == null)
+        {
+            return;
+        }
+
+        var added = editor.ApplySelectedFetchedModels();
+        if (added == 0)
+        {
+            SetStatus("没有需要添加的模型（勾选的模型都已存在或未勾选）。");
+            return;
+        }
+
+        MarkDirty();
+        SetStatus($"已为「{editor.HeaderText}」添加 {added} 个模型，保存后生效。");
+    }
+
+    private static void CloseModelPicker(ProviderEditorViewModel? editor)
+    {
+        if (editor != null)
+        {
+            editor.IsModelPickerOpen = false;
+        }
+    }
+
     private List<string> ValidateEditors()
     {
         var errors = new List<string>();
@@ -940,6 +1069,10 @@ public sealed class SettingsViewModel : ObservableObject
         MoveUpCommand.RaiseCanExecuteChanged();
         MoveDownCommand.RaiseCanExecuteChanged();
         TestConnectionCommand.RaiseCanExecuteChanged();
+        FetchModelsCommand.RaiseCanExecuteChanged();
+        SelectAllFetchedModelsCommand.RaiseCanExecuteChanged();
+        SelectNoFetchedModelsCommand.RaiseCanExecuteChanged();
+        ApplyFetchedModelsCommand.RaiseCanExecuteChanged();
         ResetSystemPromptCommand.RaiseCanExecuteChanged();
         ConfirmDeleteCommand.RaiseCanExecuteChanged();
         SaveCommand.RaiseCanExecuteChanged();

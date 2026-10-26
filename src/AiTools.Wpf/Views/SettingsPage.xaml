@@ -446,6 +446,135 @@
                                             CommandParameter="{Binding}" />
                                 </Grid>
 
+                                <!-- 从服务商接口获取模型列表 -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <Button Content="获取模型列表"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Command="{Binding DataContext.FetchModelsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding CanFetchModels}" />
+                                    <TextBlock Text="{Binding ModelFetchStatus}"
+                                               Style="{StaticResource Settings_TestStatusText}"
+                                               Visibility="{Binding ModelFetchStatus, Converter={StaticResource StringToVisibility}}" />
+                                </StackPanel>
+
+                                <!-- 候选模型选择面板 -->
+                                <Border x:Name="ModelPickerPanel"
+                                        Background="{StaticResource BackgroundBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="10"
+                                        Margin="0,0,0,10"
+                                        Visibility="{Binding IsModelPickerOpen, Converter={StaticResource BoolToVisibility}}">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                                <TextBlock Text="可用模型" Style="{StaticResource CardTitle}" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding FetchedSelectionText}"
+                                                           Style="{StaticResource Hint}"
+                                                           Margin="8,0,0,0"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1"
+                                                    Content="关闭"
+                                                    Style="{StaticResource GhostButton}"
+                                                    Command="{Binding DataContext.CloseModelPickerCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}" />
+                                        </Grid>
+
+                                        <TextBox Text="{Binding ModelFilterText, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource TextField}"
+                                                 Padding="8,6"
+                                                 Margin="0,0,0,8"
+                                                 ToolTip="按模型 ID 或显示名称过滤" />
+
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                                <Button Content="全选"
+                                                        Style="{StaticResource GhostButton}"
+                                                        Command="{Binding DataContext.SelectAllFetchedModelsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}"
+                                                        Margin="0,0,8,0" />
+                                                <Button Content="全不选"
+                                                        Style="{StaticResource GhostButton}"
+                                                        Command="{Binding DataContext.SelectNoFetchedModelsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1"
+                                                    Content="添加勾选的模型"
+                                                    Style="{StaticResource PrimaryButton}"
+                                                    Command="{Binding DataContext.ApplyFetchedModelsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}" />
+                                        </Grid>
+
+                                        <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl ItemsSource="{Binding FetchedModels}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type vm:FetchedModelRowViewModel}">
+                                                        <Border Background="{StaticResource SurfaceBrush}"
+                                                                CornerRadius="4"
+                                                                Padding="8,5"
+                                                                Margin="0,0,0,4">
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <CheckBox Grid.Column="0"
+                                                                          Style="{StaticResource ToggleField}"
+                                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                                          VerticalAlignment="Center"
+                                                                          Margin="0,0,8,0" />
+                                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                                    <TextBlock Text="{Binding Id}"
+                                                                               Foreground="{StaticResource TextBrush}"
+                                                                               FontFamily="{StaticResource MonoFont}"
+                                                                               FontSize="12"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Text="{Binding DisplayName}"
+                                                                               Style="{StaticResource Hint}"
+                                                                               Visibility="{Binding HasDisplayName, Converter={StaticResource BoolToVisibility}}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                </StackPanel>
+                                                                <Border Grid.Column="2"
+                                                                        Style="{StaticResource Badge}"
+                                                                        Margin="8,0,0,0"
+                                                                        Visibility="{Binding IsAlreadyConfigured, Converter={StaticResource BoolToVisibility}}">
+                                                                    <TextBlock Text="已配置" Style="{StaticResource BadgeText}" />
+                                                                </Border>
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+
+                                        <TextBlock Margin="2,4,0,0"
+                                                   Text="没有匹配的模型，请调整筛选条件或重新获取。"
+                                                   Visibility="{Binding HasFetchedModels, Converter={StaticResource InverseBoolToVisibility}}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource Hint}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding HasFetchedAnyModels}" Value="False">
+                                                            <Setter Property="Text" Value="服务商没有返回任何模型。" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Border>
+
                                 <Grid Margin="4,0,4,4">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="2*" />

@@ -153,6 +153,45 @@ public static class AiToolsWpf
         return Options.ProviderFactory!.CreateChatClient(provider);
     }
 
+    /// <summary>
+    /// 为给定的服务商配置获取模型列表客户端，供设置页从服务商接口拉取可用模型。
+    /// </summary>
+    /// <param name="provider">服务商配置。</param>
+    /// <exception cref="AiToolsWpfException">服务商配置不完整，或宿主工厂不支持模型列表。</exception>
+    public static Abstractions.IModelCatalog CreateModelCatalog(ProviderConfig provider)
+    {
+        if (provider == null)
+        {
+            throw new ArgumentNullException(nameof(provider));
+        }
+
+        var options = Options;
+        if (options.ProviderModelCatalogFactory != null)
+        {
+            return options.ProviderModelCatalogFactory.CreateModelCatalog(provider);
+        }
+
+        if (options.ProviderFactory is IProviderModelCatalogFactory factory)
+        {
+            return factory.CreateModelCatalog(provider);
+        }
+
+        throw new AiToolsWpfException(
+            $"当前服务商工厂（{options.ProviderFactory?.GetType().Name}）不支持获取模型列表，" +
+            "请设置 AiToolsWpfOptions.ProviderModelCatalogFactory。");
+    }
+
+    /// <summary>获取当前宿主是否支持从服务商接口获取模型列表。</summary>
+    public static bool SupportsModelCatalog
+    {
+        get
+        {
+            var options = OptionsAccessor;
+            return options != null &&
+                   (options.ProviderModelCatalogFactory != null || options.ProviderFactory is IProviderModelCatalogFactory);
+        }
+    }
+
     /// <summary>注册一个 Tool provider，由对话页向 model 暴露。</summary>
     public static void RegisterToolProvider(IChatToolProvider provider)
     {

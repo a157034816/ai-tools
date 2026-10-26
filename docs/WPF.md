@@ -86,6 +86,7 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 | `ISettingsStore` | 设置持久化 | `JsonFileSettingsStore`（原子写入） |
 | `ISecretProtector` | API Key 加密 | `DpapiSecretProtector`（Windows DPAPI，按用户） |
 | `IProviderFactory` | 从配置创建聊天客户端 | `BuiltInProviderFactory`（OpenAI/Anthropic/Gemini） |
+| `IProviderModelCatalogFactory` | 从配置创建模型列表客户端（设置页「获取模型列表」） | `BuiltInProviderFactory`（同时实现） |
 | `IChatToolProvider` | 向模型暴露宿主工具 | 无（可选注册） |
 
 ## 全局配置项
@@ -94,6 +95,7 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 |---|---|
 | `SettingsStore` | 设置存储实现 |
 | `ProviderFactory` | Provider 工厂实现 |
+| `ProviderModelCatalogFactory` | 模型列表工厂；null 时复用实现了 `IProviderModelCatalogFactory` 的 `ProviderFactory` |
 | `SecretProtector` | 密钥保护实现（默认存储使用） |
 | `Providers` | 设置页可选的服务商模板 |
 | `DefaultSystemPrompt` | 新对话的默认系统提示词 |
@@ -163,11 +165,35 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 - 从内置模板添加服务商（OpenAI、Anthropic、Gemini、DeepSeek、Kimi、通义千问、Ollama、自定义）
 - 编辑显示名、协议、Base URL、API Key（可显示/隐藏）、启用状态
 - 模型列表管理（添加/删除/启用/显示名）
+- 从服务商接口获取模型列表：调用各家 `GET /models`（OpenAI/兼容端点、Anthropic、Gemini），自动翻页；候选面板支持按 ID / 显示名筛选、全选/全不选，只添加尚未配置的模型并标记「已配置」
 - 连接测试：发送最小请求验证 Base URL、密钥与模型是否可用，显示耗时与回复摘要
 - 对话默认系统提示词（留空回落到宿主全局默认值）
 - 保存前校验：协议合法、URL 为 http/https 绝对地址、启用项必须有模型；服务商 ID 自动去重
 - 删除需二次确认（页面内联，不弹窗）
 - 保存/重新加载；API Key 落盘前自动加密；保存采用原子写入；保存时保留对话页的供应商/模型选择
+
+### 自定义模型列表来源
+
+若宿主使用 `IProviderFactory` 的替代实现（代理、密钥轮换、自建网关），设置页的「获取模型列表」默认不可用。
+两种接入方式任选其一：
+
+```csharp
+// 方式 1：单独提供模型列表工厂（推荐，职责单一）
+AiToolsWpf.Initialize(new AiToolsWpfOptions
+{
+    ProviderFactory = new MyProviderFactory(),
+    ProviderModelCatalogFactory = new MyModelCatalogFactory()   // 实现 IProviderModelCatalogFactory
+});
+
+// 方式 2：让工厂同时实现 IProviderModelCatalogFactory
+public sealed class MyProviderFactory : IProviderFactory, IProviderModelCatalogFactory
+{
+    public IChatClient CreateChatClient(ProviderConfig provider) => /* ... */;
+    public IModelCatalog CreateModelCatalog(ProviderConfig provider) => new MyModelCatalog(provider);
+}
+```
+
+`AiToolsWpf.SupportsModelCatalog` 可用于在自定义 UI 中判断宿主是否支持该能力。
 
 ## 设计约束
 

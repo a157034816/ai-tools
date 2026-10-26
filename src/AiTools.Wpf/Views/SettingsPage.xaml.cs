@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,6 +13,8 @@ namespace AiTools.Wpf.Views;
 /// </summary>
 public partial class SettingsPage : UserControl
 {
+    private ProviderEditorViewModel? _observedProvider;
+
     /// <summary>创建设置页及其 ViewModel。</summary>
     public SettingsPage()
     {
@@ -19,6 +22,7 @@ public partial class SettingsPage : UserControl
         InitializeComponent();
         DataContext = ViewModel;
         Loaded += OnLoaded;
+        ViewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
     /// <summary>获取支撑此页面的 ViewModel。</summary>
@@ -42,5 +46,40 @@ public partial class SettingsPage : UserControl
             // 初始化在视图模型内部已捕获可预期异常，这里兜底，避免 UI 线程出现未处理异常。
             System.Diagnostics.Debug.WriteLine($"[AiTools] 设置页初始化失败：{ex}");
         }
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(SettingsViewModel.SelectedProvider))
+        {
+            return;
+        }
+
+        if (_observedProvider != null)
+        {
+            _observedProvider.PropertyChanged -= OnProviderPropertyChanged;
+        }
+
+        _observedProvider = ViewModel.SelectedProvider;
+
+        if (_observedProvider != null)
+        {
+            _observedProvider.PropertyChanged += OnProviderPropertyChanged;
+        }
+    }
+
+    private void OnProviderPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(ProviderEditorViewModel.IsModelPickerOpen) ||
+            sender is not ProviderEditorViewModel editor ||
+            !editor.IsModelPickerOpen)
+        {
+            return;
+        }
+
+        // 面板展开后可能落在可视区外（它位于模型列表上方较远处），滚动到可见位置。
+        Dispatcher.BeginInvoke(
+            new Action(() => ModelPickerPanel.BringIntoView()),
+            System.Windows.Threading.DispatcherPriority.Background);
     }
 }

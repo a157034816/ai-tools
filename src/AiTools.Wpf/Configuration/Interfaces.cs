@@ -34,6 +34,18 @@ public interface IProviderFactory
     IChatClient CreateChatClient(ProviderConfig provider);
 }
 
+/// <summary>
+/// 根据服务商配置创建模型列表客户端。实现此接口可让设置页的「获取模型列表」
+/// 通过自定义网关、缓存或别的来源返回可用模型。
+/// </summary>
+public interface IProviderModelCatalogFactory
+{
+    /// <summary>为给定的服务商配置创建模型列表客户端。</summary>
+    /// <param name="provider">服务商配置，包含已解密的 API Key。</param>
+    /// <exception cref="AiToolsWpfException">服务商配置不完整或不受支持。</exception>
+    IModelCatalog CreateModelCatalog(ProviderConfig provider);
+}
+
 /// <summary>持久化 <see cref="AppSettings"/>。实现此接口可将设置存储到数据库或自定义位置。</summary>
 public interface ISettingsStore
 {
