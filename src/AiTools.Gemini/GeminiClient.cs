@@ -51,6 +51,7 @@ public sealed class GeminiClient : IDisposable
         Embeddings = new GeminiEmbeddingClient(options, _httpClient);
         Images = new GeminiImageClient(options, _httpClient);
         Audio = new GeminiAudioClient(options, _httpClient);
+        Models = new GeminiModelClient(options, _httpClient);
     }
 
     /// <summary>聊天补全客户端。</summary>
@@ -64,6 +65,9 @@ public sealed class GeminiClient : IDisposable
 
     /// <summary>语音合成与转写客户端。</summary>
     public GeminiAudioClient Audio { get; }
+
+    /// <summary>模型列表客户端。</summary>
+    public GeminiModelClient Models { get; }
 
     /// <summary>使用提供的选项创建聚合客户端。</summary>
     /// <param name="options">服务商选项。</param>

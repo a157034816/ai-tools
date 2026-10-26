@@ -46,6 +46,7 @@ public sealed class OpenAiClient : IDisposable
         Embeddings = new OpenAiEmbeddingClient(options, _httpClient);
         Images = new OpenAiImageClient(options, _httpClient);
         Audio = new OpenAiAudioClient(options, _httpClient);
+        Models = new OpenAiModelClient(options, _httpClient);
     }
 
     /// <summary>获取所有子客户端使用的选项。</summary>
@@ -65,6 +66,9 @@ public sealed class OpenAiClient : IDisposable
 
     /// <summary>获取音频（语音合成与转写）客户端。</summary>
     public OpenAiAudioClient Audio { get; }
+
+    /// <summary>获取模型列表客户端。</summary>
+    public OpenAiModelClient Models { get; }
 
     /// <summary>为提供的选项创建新的聚合客户端。</summary>
     /// <param name="options">服务商选项。</param>

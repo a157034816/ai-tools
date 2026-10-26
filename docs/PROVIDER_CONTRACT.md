@@ -125,6 +125,10 @@ sealed class Usage
     CacheReadInputTokens; CacheCreationInputTokens; ReasoningTokens;
 }
 
+// 模型列表（设置页「获取模型列表」）
+sealed class ModelInfo { string Id; string DisplayName; string? OwnedBy; DateTimeOffset? CreatedAt; string GetDisplayName(); }
+interface IModelCatalog { string ProviderName; Task<IReadOnlyList<ModelInfo>> ListModelsAsync(CancellationToken ct = default); }
+
 // 嵌入
 sealed class EmbeddingRequest { string Model; IReadOnlyList<string> Inputs; int? Dimensions; string? InputType; JsonElement? AdditionalParameters; }
 sealed class Embedding { int Index; float[] Vector; }
