@@ -165,8 +165,62 @@ public sealed class SkillCatalog
         return new SkillCatalog(skills, diagnostics);
     }
 
-    private static List<SkillDefinition> MarkDuplicates(List<SkillDefinition> skills, List<SkillDiagnostic> diagnostics)
+    /// <summary>
+    /// 从多个目录合并发现 skill。后列出的目录优先：同名 skill 由 <paramref name="roots"/> 中
+    /// 靠后的定义胜出，靠前的定义被记录为诊断。
+    /// </summary>
+    /// <remarks>
+    /// 这与 Pi / Codex 共用的 <c>.agents</c> 约定一致：项目级定义覆盖用户级定义。
+    /// 调用方通常按"内置 → 用户共享 → 项目"的顺序传入，最后一项优先级最高。
+    /// </remarks>
+    /// <param name="roots">按优先级从低到高排列的目录列表；不存在的目录只记录诊断。</param>
+    /// <param name="recursive">是否递归搜索子目录。</param>
+    public static SkillCatalog LoadFromDirectories(IEnumerable<string> roots, bool recursive = true)
     {
+        if (roots == null)
+        {
+            throw new ArgumentNullException(nameof(roots));
+        }
+
+        var diagnostics = new List<SkillDiagnostic>();
+        var winners = new Dictionary<string, SkillDefinition>(StringComparer.OrdinalIgnoreCase);
+        var order = new List<string>();
+
+        foreach (var root in roots)
+        {
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                continue;
+            }
+
+            var catalog = LoadFromDirectory(root!, recursive);
+            diagnostics.AddRange(catalog.Diagnostics);
+
+            foreach (var skill in catalog.Skills)
+            {
+                if (winners.TryGetValue(skill.Name, out var existing))
+                {
+                    // 后出现的根目录优先级更高：替换旧定义并说明被覆盖的来源。
+                    diagnostics.Add(new SkillDiagnostic
+                    {
+                        Path = existing.SkillFilePath,
+                        Message = $"Skill '{skill.Name}' from '{existing.DirectoryPath}' was overridden by '{skill.DirectoryPath}'."
+                    });
+                    winners[skill.Name] = skill;
+                    continue;
+                }
+
+                winners[skill.Name] = skill;
+                order.Add(skill.Name);
+            }
+        }
+
+        var merged = order.Select(name => winners[name]).ToList();
+        merged.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.Ordinal));
+        return new SkillCatalog(merged, diagnostics);
+    }
+
+    private static List<SkillDefinition> MarkDuplicates(List<SkillDefinition> skills, List<SkillDiagnostic> diagnostics)    {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<SkillDefinition>(skills.Count);
         foreach (var skill in skills)

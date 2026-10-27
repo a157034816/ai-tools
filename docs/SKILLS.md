@@ -120,6 +120,44 @@ var toolset = new SkillToolset(catalog, new SkillToolOptions
 });
 ```
 
+## 共享 `.agents` 目录（Pi / Codex 通用）
+
+多个 agent 工具约定用 `.agents` 作为**与工具无关**的共享资源根。本库直接读取这个位置，
+因此 Pi 或 Codex 里已经装好的技能，在 AiTools 里不需要复制粘贴：
+
+```
+~/.agents/                          # 用户级：对所有项目生效
+├── AGENTS.md                       # agent 指令
+└── skills/
+    └── review/
+        ├── SKILL.md
+        └── agents/openai.yaml      # 技能附带的子代理定义（只报告，不执行）
+
+<project>/.agents/                  # 项目级：只对当前项目生效
+├── AGENTS.md
+└── skills/
+    └── deploy/SKILL.md
+```
+
+```csharp
+var shared = SharedAgents.Discover(projectDirectory: @"D:\Code\my-repo");
+
+shared.Skills.Skills;          // 合并后的技能（项目级覆盖同名用户级）
+shared.BuildInstructionsPrompt(); // 两处 AGENTS.md 拼成的一段系统提示
+shared.Diagnostics;            // 被覆盖的重复技能等
+```
+
+规则：
+
+- **项目级覆盖用户级**：同名技能以项目定义为准，被覆盖的那个记入 `Diagnostics`。
+- **`AGENTS.md` 按作用域拼接**：用户级在前、项目级在后，越靠后越具体。
+- **`SKILL.md` 必须有 `name` 与 `description`**：与单目录加载一致，缺失即跳过并记诊断。
+- **`agents/*.yaml` 不执行**：只通过 `SharedAgents.FindAgentDefinitions` 报告，是否使用由宿主决定。
+
+WPF 宿主默认启用（`EnableSharedAgents = true`）：共享技能既进入 `load_skill` 的知识清单，
+也以 `/skill:<名称>` 出现在命令面板——执行时把技能指令作为提示词。插件提供同名技能时以插件为准。
+设置 `EnableUserSharedAgents = false` 可只读项目级目录。
+
 ## WPF 集成
 
 ```csharp

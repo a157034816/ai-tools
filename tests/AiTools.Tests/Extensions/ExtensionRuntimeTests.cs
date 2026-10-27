@@ -940,6 +940,93 @@ public sealed class CommandCatalogTests
     }
 
     [Fact]
+    public async Task SharedSkills_ExecuteAsSkillPrefixedCommands()
+    {
+        var sharedSkill = new AiTools.Skills.SkillDefinition
+        {
+            Name = "shared-review",
+            Description = "Shared review skill.",
+            Instructions = "Review the changed files carefully.",
+            DirectoryPath = Path.Combine(Path.GetTempPath(), "shared-review"),
+            SkillFilePath = Path.Combine(Path.GetTempPath(), "shared-review", "SKILL.md")
+        };
+
+        var pipeline = new ExtensionPipeline(new ExtensionPipelineOptions
+        {
+            Extensions = Array.Empty<IExtension>(),
+            WorkingDirectory = Environment.CurrentDirectory,
+            SharedSkills = new[] { sharedSkill }
+        });
+
+        // 命令面板里出现 /skill:shared-review，来源标记为 agents。
+        var command = Assert.Single(
+            pipeline.Commands.Commands,
+            item => item.SharedSkill != null);
+        Assert.Equal("skill:shared-review", command.Name);
+        Assert.Equal(CommandCatalog.SharedAgentsSource, command.Source);
+        Assert.True(command.IsSkillCommand);
+
+        // 执行时把技能指令作为提示词；参数未被模板消费时追加 ARGUMENTS 块。
+        var execution = await pipeline.ExecuteCommandAsync(
+            "/skill:shared-review 关注错误处理",
+            pipeline.Session.CreateContext(null, null));
+
+        Assert.Equal(CommandExecutionKind.Prompt, execution!.Kind);
+        Assert.Contains("Review the changed files carefully.", execution.Prompt);
+        Assert.Contains("关注错误处理", execution.Prompt);
+    }
+
+    [Fact]
+    public void SharedSkills_DoNotOverridePluginSkillsWithTheSameName()
+    {
+        var plugins = PluginCatalog.FromPlugins(new[]
+        {
+            new AiToolsPlugin
+            {
+                Name = "dup",
+                RootPath = Environment.CurrentDirectory,
+                Skills = new[]
+                {
+                    new PluginSkill
+                    {
+                        Name = "review",
+                        QualifiedName = "dup:review",
+                        PluginName = "dup",
+                        Description = "Plugin version.",
+                        Instructions = "Plugin body.",
+                        DirectoryPath = Environment.CurrentDirectory,
+                        SkillFilePath = Path.Combine(Environment.CurrentDirectory, "SKILL.md"),
+                        Command = new PluginCommand
+                        {
+                            Name = "dup:review",
+                            ShortName = "review",
+                            PluginName = "dup",
+                            Description = "Plugin version.",
+                            Body = "Plugin body.",
+                            PluginRoot = Environment.CurrentDirectory
+                        }
+                    }
+                }
+            }
+        });
+
+        var shared = new AiTools.Skills.SkillDefinition
+        {
+            Name = "review",
+            Description = "Shared version.",
+            Instructions = "Shared body.",
+            DirectoryPath = Environment.CurrentDirectory,
+            SkillFilePath = Path.Combine(Environment.CurrentDirectory, "SKILL.md")
+        };
+
+        var catalog = CommandCatalog.Create(null, plugins, new[] { shared });
+
+        // 插件技能更具体：同名的共享技能不生成第二条 /skill: 命令。
+        Assert.DoesNotContain(catalog.Commands, item => item.SharedSkill != null);
+        Assert.Contains(catalog.Commands, item => item.Skill != null);
+    }
+
+    [Fact]
     public async Task Pipeline_UnknownCommand_ReturnsNull()    {
         var pipeline = new ExtensionPipeline(new ExtensionPipelineOptions
         {

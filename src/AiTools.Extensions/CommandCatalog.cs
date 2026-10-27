@@ -38,11 +38,17 @@ public sealed class ResolvedCommand
     /// <summary>获取由 skill 生成的命令所对应的 skill；普通命令时为 null。</summary>
     public PluginSkill? Skill { get; init; }
 
+    /// <summary>
+    /// 获取共享 <c>.agents</c> 目录发现的技能；普通命令时为 null。
+    /// 这类命令没有插件宿主，执行时直接把技能的指令正文作为提示词。
+    /// </summary>
+    public AiTools.Skills.SkillDefinition? SharedSkill { get; init; }
+
     /// <summary>获取是否为代码实现的扩展命令。</summary>
     public bool IsCodeCommand => ExtensionCommand != null;
 
-    /// <summary>获取命令是否由 skill 提供。</summary>
-    public bool IsSkillCommand => Skill != null;
+    /// <summary>获取命令是否由 skill 提供（插件技能或共享 <c>.agents</c> 技能）。</summary>
+    public bool IsSkillCommand => Skill != null || SharedSkill != null;
 
     /// <summary>获取短名是否与其它命令冲突。</summary>
     public bool IsAmbiguous { get; set; }
@@ -149,7 +155,14 @@ public sealed class CommandCatalog
     /// <summary>构建命令目录。</summary>
     /// <param name="runtime">扩展运行时（可为 null）。</param>
     /// <param name="plugins">插件目录（可为 null）。</param>
-    public static CommandCatalog Create(ExtensionRuntime? runtime, PluginCatalog? plugins)
+    /// <param name="sharedSkills">
+    /// 共享 <c>.agents</c> 技能；为 null 时只使用扩展与插件。
+    /// 插件已经提供了同名技能时以插件为准（插件更具体）。
+    /// </param>
+    public static CommandCatalog Create(
+        ExtensionRuntime? runtime,
+        PluginCatalog? plugins,
+        IEnumerable<AiTools.Skills.SkillDefinition>? sharedSkills = null)
     {
         var commands = new List<ResolvedCommand>();
 
@@ -200,8 +213,45 @@ public sealed class CommandCatalog
             commands.AddRange(CreateSkillCommands(plugins));
         }
 
+        if (sharedSkills != null)
+        {
+            var pluginSkillNames = new HashSet<string>(
+                plugins?.Skills.Select(skill => skill.Name) ?? Enumerable.Empty<string>(),
+                StringComparer.OrdinalIgnoreCase);
+
+            commands.AddRange(CreateSharedSkillCommands(sharedSkills, pluginSkillNames));
+        }
+
         return new CommandCatalog(commands, plugins, runtime);
     }
+
+    /// <summary>把共享 <c>.agents</c> 技能转成 <c>/skill:&lt;name&gt;</c> 命令。</summary>
+    private static IEnumerable<ResolvedCommand> CreateSharedSkillCommands(
+        IEnumerable<AiTools.Skills.SkillDefinition> skills,
+        ISet<string> pluginSkillNames)
+    {
+        foreach (var skill in skills)
+        {
+            // 插件技能更具体，同名时不覆盖它。
+            if (pluginSkillNames.Contains(skill.Name))
+            {
+                continue;
+            }
+
+            yield return new ResolvedCommand
+            {
+                Name = ResolvedCommand.SkillPrefix + skill.Name,
+                ShortName = ResolvedCommand.SkillPrefix + skill.Name,
+                ArgumentHint = "[指令]",
+                Description = skill.Description,
+                Source = SharedAgentsSource,
+                SharedSkill = skill
+            };
+        }
+    }
+
+    /// <summary>共享 <c>.agents</c> 技能在命令面板中的来源标签。</summary>
+    public const string SharedAgentsSource = "agents";
 
     /// <summary>
     /// 为每个 skill 生成 <c>/skill:&lt;name&gt;</c> 命令，让用户可以直接用滑杠命令调用技能，

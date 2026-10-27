@@ -61,7 +61,7 @@ public sealed class ExtensionPipeline : IAsyncDisposable
 
         ActivatePipelineFeatures();
 
-        Commands = CommandCatalog.Create(Runtime, Plugins);
+        Commands = CommandCatalog.Create(Runtime, Plugins, Options.SharedSkills);
     }
     private void ActivatePipelineFeatures()
     {
@@ -389,6 +389,23 @@ public sealed class ExtensionPipeline : IAsyncDisposable
             };
         }
 
+        // 共享 .agents 技能：没有插件宿主，直接把技能指令正文作为提示词。
+        if (command.SharedSkill is { } sharedSkill)
+        {
+            var prompt = CommandTemplateRenderer.AppendArgumentsIfUnused(
+                sharedSkill.Instructions,
+                arguments,
+                consumed: false);
+
+            return new CommandExecution
+            {
+                Command = command,
+                Arguments = raw,
+                Kind = CommandExecutionKind.Prompt,
+                Prompt = prompt
+            };
+        }
+
         // 插件命令：渲染 Markdown 正文为提示词。
         var pluginCommand = command.PluginCommand!;
         var host = _pluginHost;
@@ -680,7 +697,7 @@ public sealed class ExtensionPipeline : IAsyncDisposable
             _activationDiagnostics.AddRange(Runtime.Activate(extension));
         }
         ActivatePipelineFeatures();
-        Commands = CommandCatalog.Create(Runtime, Plugins);
+        Commands = CommandCatalog.Create(Runtime, Plugins, Options.SharedSkills);
 
         var restarted = ExtensionSession.Create(Runtime, Session.WorkingDirectory);
         restarted.Ui = Ui;
@@ -699,7 +716,7 @@ public sealed class ExtensionPipeline : IAsyncDisposable
         }
         return extensions;
     }
-    internal void RefreshCommandCatalog() => Commands = CommandCatalog.Create(Runtime, Plugins);
+    internal void RefreshCommandCatalog() => Commands = CommandCatalog.Create(Runtime, Plugins, Options.SharedSkills);
 
 
     /// <summary>构建给模型的插件命令清单（不含扩展命令，扩展命令通过工具暴露）。</summary>
@@ -781,4 +798,10 @@ public sealed class ExtensionPipelineOptions
 
     /// <summary>获取或设置磁盘扩展工作区；为 null 时禁用扩展包。</summary>
     public ExtensionWorkspace? Workspace { get; set; }
+
+    /// <summary>
+    /// 获取或设置共享 <c>.agents</c> 目录发现的技能。它们以 <c>/skill:&lt;名称&gt;</c>
+    /// 出现在命令目录里，执行时把技能指令作为提示词；插件提供同名技能时以插件为准。
+    /// </summary>
+    public IReadOnlyList<AiTools.Skills.SkillDefinition>? SharedSkills { get; set; }
 }

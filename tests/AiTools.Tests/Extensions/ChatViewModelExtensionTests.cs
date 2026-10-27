@@ -367,6 +367,81 @@ public sealed class ChatViewModelExtensionTests : IDisposable
     }
 
     [Fact]
+    public async Task SharedAgents_InstructionsAndSkillsReachTheModel()
+    {
+        // 共享 .agents：AGENTS.md 进系统提示，skills/ 里的技能同时进清单与斜杠命令。
+        var root = Path.Combine(Path.GetTempPath(), "aitools-vm-agents-" + Guid.NewGuid().ToString("N"));
+        var home = Path.Combine(root, "home", ".agents");
+        var project = Path.Combine(root, "repo");
+        var projectAgents = Path.Combine(project, ".agents");
+
+        Directory.CreateDirectory(Path.Combine(home, "skills", "user-skill"));
+        File.WriteAllText(
+            Path.Combine(home, "AGENTS.md"),
+            "# Global\n\nAlways answer in Simplified Chinese.");
+        File.WriteAllText(
+            Path.Combine(home, "skills", "user-skill", "SKILL.md"),
+            "---\nname: user-skill\ndescription: Shared skill from the user directory.\n---\nFollow the shared playbook.");
+
+        Directory.CreateDirectory(Path.Combine(projectAgents, "skills", "project-skill"));
+        File.WriteAllText(
+            Path.Combine(projectAgents, "AGENTS.md"),
+            "# Project\n\nRun dotnet test before claiming success.");
+        File.WriteAllText(
+            Path.Combine(projectAgents, "skills", "project-skill", "SKILL.md"),
+            "---\nname: project-skill\ndescription: Shared skill from the project directory.\n---\nUse the project checklist.");
+
+        AiToolsWpf.Reset();
+        AiToolsWpf.Initialize(options =>
+        {
+            options.ConversationStore = new InMemoryConversationStore();
+            options.SettingsStore = new FixedSettingsStore(providerConfig: new ProviderConfig
+            {
+                Id = "test",
+                DisplayName = "Test",
+                Protocol = ProviderProtocols.OpenAi,
+                BaseUrl = "https://example.com/v1",
+                ApiKey = "test-key",
+                Models = new List<ModelConfig> { new() { Id = "test-model", Enabled = true } }
+            });
+            options.ProviderFactory = new FixedProviderFactory(_client);
+            options.PluginHostOptions = new AiTools.Extensions.PluginHostOptions { ProjectDirectory = project };
+            options.EnableSharedAgents = true;
+            options.EnableUserSharedAgents = true;
+            options.SharedAgentsUserDirectory = home;
+        });
+
+        try
+        {
+            var vm = new ChatViewModel();
+            await vm.InitializeAsync();
+            vm.InputText = "hello";
+            await vm.SendAsync();
+
+            var prompt = Assert.Single(_client.Requests).SystemPrompt;
+            Assert.Contains("## Agent instructions", prompt);
+            Assert.Contains("Always answer in Simplified Chinese.", prompt);
+            Assert.Contains("Run dotnet test before claiming success.", prompt);
+            Assert.Contains("Shared skill from the user directory.", prompt);
+            Assert.Contains("Shared skill from the project directory.", prompt);
+
+            // 共享技能同样出现在 /skill: 命令列表里。
+            Assert.Contains(vm.AvailableCommands, item => item.Name.Contains("user-skill"));
+            Assert.Contains(vm.AvailableCommands, item => item.Name.Contains("project-skill"));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    [Fact]
     public async Task SkillCommands_AppearInThePaletteAndRunFromTheInputBox()
     {
         // 技能只在插件加载时被发现；单独初始化一份带技能的宿主。

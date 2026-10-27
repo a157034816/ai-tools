@@ -30,7 +30,9 @@ public static class AiToolsWpf
     private static AppSettings? _settings;
     private static AiTools.Extensions.PluginHost? _pluginHost;
     private static AiTools.Extensions.ExtensionPipeline? _pipeline;
-    private static Skills.PluginSkillChatToolProvider? _pluginSkillProvider;
+    private static Skills.SkillCatalogChatToolProvider? _pluginSkillProvider;
+    private static AiTools.Skills.SharedAgentsCatalog? _sharedAgents;
+    private static bool _skillProviderResolved;
     private static Skills.PluginMcpChatToolProvider? _pluginMcpProvider;
 
     /// <summary>获取 <see cref="Initialize(AiToolsWpfOptions?)"/> 是否已完成。</summary>
@@ -233,22 +235,56 @@ public static class AiToolsWpf
     }
 
     /// <summary>
-    /// 获取插件 skill 的 Tool provider（模型可调用 <c>load_skill</c>）。
-    /// 未配置插件或插件没有 skill 时返回 null；实例在整个进程中复用。
+    /// 获取共享 <c>.agents</c> 目录的发现结果（用户级 <c>~/.agents</c> 与项目级 <c>&lt;project&gt;/.agents</c>）。
+    /// 未启用时返回 null。首次访问时发现并缓存，<see cref="ResetExtensions"/> 会清空缓存。
     /// </summary>
-    public static Skills.PluginSkillChatToolProvider? PluginSkillProvider
+    public static AiTools.Skills.SharedAgentsCatalog? SharedAgents
     {
         get
         {
-            var host = PluginHost;
-            if (host == null || host.Catalog.Skills.Count == 0)
+            var options = Options;
+            if (!options.EnableSharedAgents)
             {
                 return null;
             }
 
+            return _sharedAgents ??= AiTools.Skills.SharedAgents.Discover(
+                WorkingDirectory,
+                includeUser: options.EnableUserSharedAgents,
+                userDirectory: options.SharedAgentsUserDirectory);
+        }
+    }
+
+    /// <summary>获取本次初始化使用的工作目录（共享目录与项目信任都以它为基准）。</summary>
+    private static string WorkingDirectory
+        => Options.PluginHostOptions?.ProjectDirectory ?? Environment.CurrentDirectory;
+
+    /// <summary>
+    /// 获取合并后的技能 provider：插件技能 + 共享 <c>.agents</c> 技能。
+    /// 没有任何技能时返回 null；实例在整个进程中复用。
+    /// </summary>
+    public static Skills.SkillCatalogChatToolProvider? PluginSkillProvider
+    {
+        get
+        {
             lock (ExtensionGate)
             {
-                return _pluginSkillProvider ??= new Skills.PluginSkillChatToolProvider(host.Catalog);
+                if (_skillProviderResolved)
+                {
+                    return _pluginSkillProvider;
+                }
+
+                var plugins = PluginHost?.Catalog;
+                var shared = SharedAgents;
+                if ((plugins == null || plugins.Skills.Count == 0) &&
+                    (shared == null || shared.Skills.Count == 0))
+                {
+                    return null;
+                }
+
+                _pluginSkillProvider = Skills.SkillCatalogChatToolProvider.Create(plugins, shared);
+                _skillProviderResolved = true;
+                return _pluginSkillProvider;
             }
         }
     }
@@ -369,6 +405,8 @@ public static class AiToolsWpf
                     OutputStyle = options.OutputStyle,
                     Permissions = options.Permissions,
                     EnableWorkflows = options.EnableWorkflows,
+                    // 共享 .agents 技能进入同一个命令目录，用户可用 /skill:<名称> 直接调用。
+                    SharedSkills = SharedAgents?.Skills.Skills,
                     WorkflowOptionsFactory = () =>
                     {
                         var activePipeline = _pipeline!;
@@ -446,6 +484,8 @@ public static class AiToolsWpf
             _pipeline = null;
             _pluginSkillProvider = null;
             _pluginMcpProvider = null;
+            _sharedAgents = null;
+            _skillProviderResolved = false;
         }
 
         // MCP 子进程与扩展会话需要在重置时关闭；这里是同步路径，交给后台任务完成。

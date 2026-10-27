@@ -146,7 +146,7 @@ public sealed class ChatViewModel : ObservableObject
     private SlashCommandViewModel? _selectedCommand;
     private AiTools.Extensions.ExtensionPipeline? _pipeline;
     private string? _pendingContinuation;
-    private PluginSkillChatToolProvider? _pluginSkillProvider;
+    private AiTools.Wpf.Skills.SkillCatalogChatToolProvider? _skillCatalogProvider;
     private PluginMcpChatToolProvider? _pluginMcpProvider;
     private readonly AiTools.Wpf.Asking.InlineAskHost _askHost = new();
 
@@ -1276,10 +1276,10 @@ public sealed class ChatViewModel : ObservableObject
 
         RefreshAvailableCommands();
 
-        _pluginSkillProvider = AiToolsWpf.PluginSkillProvider;
-        if (_pluginSkillProvider != null)
+        _skillCatalogProvider = AiToolsWpf.PluginSkillProvider;
+        if (_skillCatalogProvider != null)
         {
-            AiToolsWpf.RegisterToolProviderOnce(_pluginSkillProvider);
+            AiToolsWpf.RegisterToolProviderOnce(_skillCatalogProvider);
         }
 
         _pluginMcpProvider = AiToolsWpf.PluginMcpProvider;
@@ -1501,8 +1501,17 @@ public sealed class ChatViewModel : ObservableObject
                 }
             }
 
-            // 插件技能清单：与 SkillToolset 的渐进式披露配合，模型据此决定何时 load_skill。
-            var skillPrompt = _pluginSkillProvider?.Toolset.BuildSystemPrompt();
+            // 共享 .agents 的 AGENTS.md：用户级在前、项目级在后，越靠后越具体。
+            var agentsPrompt = AiToolsWpf.SharedAgents?.BuildInstructionsPrompt();
+            if (!string.IsNullOrWhiteSpace(agentsPrompt))
+            {
+                systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+                    ? agentsPrompt
+                    : systemPrompt!.TrimEnd() + "\n\n" + agentsPrompt;
+            }
+
+            // 技能清单：与 SkillToolset 的渐进式披露配合，模型据此决定何时 load_skill。
+            var skillPrompt = _skillCatalogProvider?.Toolset.BuildSystemPrompt();
             if (!string.IsNullOrWhiteSpace(skillPrompt))
             {
                 systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)

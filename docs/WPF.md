@@ -112,6 +112,10 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 | `OutputStyle` | 初始输出风格名（`/output-style` 切换） |
 | `Permissions` | 工具权限策略；null 时不启用闸门 |
 | `EnableWorkflows` | 是否激活插件工作流，默认 true |
+| `AskPresenter` | 提问的呈现策略；null 时用输入框上方的内联面板 |
+| `EnableSharedAgents` | 是否读取共享 `.agents` 目录（技能 + `AGENTS.md`），默认 true |
+| `EnableUserSharedAgents` | 是否包含用户级 `~/.agents`；关掉只读项目级 |
+| `SharedAgentsUserDirectory` | 覆盖用户级共享根路径（主要用于测试） |
 
 ## 对话页功能
 
@@ -126,6 +130,7 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 - 内置斜杠命令：`/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help [关键字]`、`/output-style [名称]`；这些命令不调用模型，未配置服务商时同样可用
 - 技能命令：每个 skill 以 `/skill:<名称>` 列出，直接执行即把技能正文作为提示词发送；输入 `/` 后也能用不带前缀的技能名搜到
 - 内联提问面板：模型调用 `ask` 时，标题与带说明的选项叠在输入框上方；点击选项即回答，点「取消」让模型等待下一条消息
+- 共享 `.agents`：`~/.agents` 与 `<project>/.agents` 下的技能进入 `/skill:` 列表与 `load_skill` 清单，`AGENTS.md` 按「用户级 → 项目级」拼进系统提示（见 [SKILLS.md](SKILLS.md#共享-agents-目录pi--codex-通用)）
 
 ### 替换提问的呈现方式
 

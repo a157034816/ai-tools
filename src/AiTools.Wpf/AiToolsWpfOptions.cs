@@ -72,6 +72,26 @@ public sealed class AiToolsWpfOptions
     public Asking.IAskPresenter? AskPresenter { get; set; }
 
     /// <summary>
+    /// 是否读取多个 agent 工具共用的 <c>.agents</c> 目录（项目级 <c>&lt;project&gt;/.agents</c>
+    /// 与用户级 <c>~/.agents</c>）。默认 true。
+    /// </summary>
+    /// <remarks>
+    /// 共享目录遵循 Pi / Codex 的约定：<c>skills/&lt;name&gt;/SKILL.md</c> 是技能，
+    /// 根部的 <c>AGENTS.md</c> 是 agent 指令。项目级定义覆盖同名用户级定义。
+    /// 用户级技能与 <c>AGENTS.md</c> 会被合并进 <see cref="DefaultSystemPrompt"/> 之前注入的清单。
+    /// </remarks>
+    public bool EnableSharedAgents { get; set; } = true;
+
+    /// <summary>
+    /// 是否包含用户级 <c>~/.agents</c>。设为 false 只读取项目级共享目录，
+    /// 适合不希望读取开发者主目录的受限宿主。
+    /// </summary>
+    public bool EnableUserSharedAgents { get; set; } = true;
+
+    /// <summary>覆盖共享目录的用户级根路径；为 null 时使用 <c>~/.agents</c>。主要用于测试。</summary>
+    public string? SharedAgentsUserDirectory { get; set; }
+
+    /// <summary>
     /// 插件目录（Claude Code 兼容）。目录本身是插件时按单个插件加载，否则扫描其子目录。
     /// 为 null 时不加载任何插件。
     /// </summary>
