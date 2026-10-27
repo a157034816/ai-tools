@@ -59,10 +59,17 @@ public sealed class AiToolsWpfOptions
     public bool EnableExtensions { get; set; } = true;
 
     /// <summary>
-    /// 要激活的扩展。为 null 时使用内置的 <c>GoalExtension</c> 与 <c>PlanExtension</c>；
+    /// 要激活的扩展。为 null 时使用内置的 <c>AskExtension</c>、<c>GoalExtension</c> 与 <c>PlanExtension</c>；
     /// 设为空数组可只保留插件命令。
     /// </summary>
     public IReadOnlyList<AiTools.Extensions.IExtension>? Extensions { get; set; }
+
+    /// <summary>
+    /// 提问（<c>ask</c> 工具与 <c>ctx.Ui.ChooseAsync</c>）的呈现方式。
+    /// 为 null 时使用对话页输入框上方的内联面板。
+    /// 换成自定义实现即可改成模态对话框、命令行提示或固定答案。
+    /// </summary>
+    public Asking.IAskPresenter? AskPresenter { get; set; }
 
     /// <summary>
     /// 插件目录（Claude Code 兼容）。目录本身是插件时按单个插件加载，否则扫描其子目录。

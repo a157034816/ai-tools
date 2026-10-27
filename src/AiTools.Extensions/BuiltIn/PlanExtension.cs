@@ -165,6 +165,9 @@ public sealed class PlanExtension : IExtension
         builder.AppendLine("- Find every caller of the symbols you will change.");
         builder.AppendLine("- Reuse the pattern the project already uses instead of introducing a second one.");
         builder.AppendLine();
+        builder.AppendLine("Before recording the plan, call the `" + AskExtension.ToolName + "` tool once if the task leaves any decision open that would change the implementation — scope boundaries, a choice between existing patterns, trade-offs the user cares about. Pass a `title`, an optional `message`, and at least two `options`, each with a `label` and a `description` that states what the option changes. Fold the answer into the plan.");
+        builder.AppendLine("Skip the question only when the codebase and the task already determine every step; state that assumption in `context` instead.");
+        builder.AppendLine();
         builder.AppendLine("Then call `" + SaveToolName + "` with:");
         builder.AppendLine("- `context`: what exists today and why it does not satisfy the task.");
         builder.AppendLine("- `steps`: ordered steps, each with `files`, `change`, and a `verify` that names an exact command, test, or scenario. Shared foundations land first; callers migrate in the same step that removes the old path.");

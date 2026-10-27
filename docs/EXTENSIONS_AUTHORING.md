@@ -264,7 +264,10 @@ module.exports = {
 | `ctx.executeTool(name, argsJson)` | `Promise<string>` | 走完整 `tool_call`/`tool_result` 事件链与可达范围检查 |
 | `ctx.appendEntry(kind, value)` | `void` | 不进模型上下文的自定义持久化 |
 | `ctx.readEntry(kind)` | 任意 JSON | 读回最新条目 |
-| `ctx.ui` | `object \| null` | 宿主无 UI 时为 `null`；否则 `{ hasDialogs, confirm, input, select, notify, setStatus }` |
+| `ctx.ui` | `object \| null` | 宿主无 UI 时为 `null`；否则 `{ hasDialogs, confirm, input, select, choose, notify, setStatus }` |
+
+`ctx.ui.choose(title, message, choices)` 接受 `{ label, description }` 数组，返回 `{ index, label, description }`，取消时返回 `null`；
+宿主未实现富选项接口时自动退化为 `select`（说明拼进标签）。
 
 `ctx.executeTool` 返回的是**文本**：未知工具得到 `{"error":"Unknown tool: <name>"}`，不可调用得到
 `{"error":"Tool is not callable: <name>"}`，越界得到 `{"error":"Tool '<name>' is outside the reach of '<parent>'."}`。

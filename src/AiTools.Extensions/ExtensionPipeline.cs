@@ -748,6 +748,7 @@ public sealed class ExtensionPipelineOptions
     /// <summary>获取或设置要激活的扩展。</summary>
     public IReadOnlyList<IExtension> Extensions { get; set; } = new IExtension[]
     {
+        new BuiltIn.AskExtension(),
         new BuiltIn.GoalExtension(),
         new BuiltIn.PlanExtension()
     };

@@ -645,6 +645,19 @@ public sealed class PlanExtensionTests
     }
 
     [Fact]
+    public async Task PlanCommand_RequiresAskAsPrecondition()
+    {
+        var pipeline = CreatePipeline();
+
+        var result = await pipeline.Runtime.TryGetCommand("plan")!
+            .Handler(Context(pipeline.Runtime), CommandArguments.Parse("do it"), default);
+
+        // /plan 依赖通用的 ask 工具来收敛开放决策；目录里必须点名它，但不该另造一个专用提问工具。
+        Assert.Contains("`" + AskExtension.ToolName + "`", result.UserMessage);
+        Assert.DoesNotContain("/plan_" + "ask", result.UserMessage);
+    }
+
+    [Fact]
     public async Task SaveTool_RequiresVerifyPerStep()
     {
         var pipeline = CreatePipeline();

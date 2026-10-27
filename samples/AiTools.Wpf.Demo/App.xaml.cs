@@ -37,8 +37,10 @@ public partial class App : Application
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AiTools.Wpf.Demo")),
             AutoSaveConversations = true,
 
-            // /goal 与 /plan 由内置扩展（GoalExtension / PlanExtension）提供；
+            // /ask、/goal 与 /plan 由内置扩展（AskExtension / GoalExtension / PlanExtension）提供；
             // 如果宿主另有 Claude Code 插件目录，设置 PluginsDirectory 即可同时启用插件命令。
+            // 模型调用 ask 时，对话页会把选项面板叠在输入框上方（默认的 InlineAskPresenter）；
+            // 想改用弹窗或别的呈现方式，设置 options.AskPresenter 即可。
             EnableExtensions = true,
 
             // 技能目录同时放进系统提示词（渐进式披露：只注入名称与描述）。

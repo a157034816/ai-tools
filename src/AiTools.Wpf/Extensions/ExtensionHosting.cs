@@ -15,28 +15,39 @@ namespace AiTools.Wpf.Extensions;
 /// WPF 宿主的扩展界面实现：通知与状态栏直接复用对话页状态，
 /// 对话框使用模态 <see cref="Window"/>。无窗口（未初始化 UI）时退化为非交互行为。
 /// </summary>
-public sealed class WpfExtensionUi : IExtensionUi
+public sealed class WpfExtensionUi : IExtensionUi, IExtensionChoiceUi
 {
     private readonly Action<string, ExtensionNoticeKind>? _notify;
     private readonly Action<string?>? _setStatus;
     private readonly Func<Window?>? _ownerResolver;
+    private readonly Asking.IAskPresenter? _askPresenter;
 
     /// <summary>创建 UI 桥。</summary>
     /// <param name="notify">显示通知。</param>
     /// <param name="setStatus">更新状态栏（null 清除）。</param>
     /// <param name="ownerResolver">返回对话框的属主窗口。</param>
+    /// <param name="askPresenter">
+    /// 带说明选项的呈现策略。为 null 时使用模态窗口（<see cref="ExtensionChoiceWindow"/>）；
+    /// 传入 <see cref="Asking.InlineAskPresenter"/> 可改为输入框上方的内联面板。
+    /// </param>
     public WpfExtensionUi(
         Action<string, ExtensionNoticeKind>? notify = null,
         Action<string?>? setStatus = null,
-        Func<Window?>? ownerResolver = null)
+        Func<Window?>? ownerResolver = null,
+        Asking.IAskPresenter? askPresenter = null)
     {
         _notify = notify;
         _setStatus = setStatus;
         _ownerResolver = ownerResolver;
+        _askPresenter = askPresenter;
     }
 
     /// <inheritdoc />
-    public bool HasDialogs => Application.Current != null;
+    /// <remarks>
+    /// 配置了呈现策略时恒为 true：内联面板由视图绘制，不依赖 WPF <see cref="Application"/>
+    /// （无窗口的测试宿主也能交互）。其余能力仍然需要窗口。
+    /// </remarks>
+    public bool HasDialogs => _askPresenter != null || Application.Current != null;
 
     /// <inheritdoc />
     public void Notify(string message, ExtensionNoticeKind kind = ExtensionNoticeKind.Info) => _notify?.Invoke(message, kind);
@@ -115,6 +126,73 @@ public sealed class WpfExtensionUi : IExtensionUi
         }
 
         return Task.FromResult(window.ShowDialog() == true ? window.SelectedOption : null);
+    }
+
+    /// <inheritdoc />
+    public async Task<ExtensionChoiceResult?> ChooseAsync(
+        string title,
+        string? message,
+        IReadOnlyList<ExtensionChoice> choices,
+        CancellationToken cancellationToken = default)
+    {
+        if (choices == null || choices.Count == 0)
+        {
+            return null;
+        }
+
+        // 宿主配置了呈现策略时交给它：内联面板不需要 WPF Application，
+        // 也不阻塞调用线程（面板由视图绘制，答案来自用户点击）。
+        if (_askPresenter != null)
+        {
+            var prompt = new Asking.AskPrompt(
+                title,
+                message,
+                choices.Select((choice, index) => new Asking.AskPromptOption(choice.Label, choice.Description, index)).ToArray());
+
+            var response = await _askPresenter.AskAsync(prompt, cancellationToken).ConfigureAwait(false);
+            if (response.IsCancelled || response.SelectedIndex is not { } index || index < 0 || index >= choices.Count)
+            {
+                return null;
+            }
+
+            return new ExtensionChoiceResult
+            {
+                Index = index,
+                Label = choices[index].Label,
+                Description = choices[index].Description
+            };
+        }
+
+        if (!HasDialogs)
+        {
+            return null;
+        }
+
+        var dispatcher = Application.Current.Dispatcher;
+        if (!dispatcher.CheckAccess())
+        {
+            return await dispatcher.InvokeAsync(() => ChooseAsync(title, message, choices, cancellationToken)).Task.Unwrap().ConfigureAwait(false);
+        }
+
+        var window = new ExtensionChoiceWindow(title, message, choices);
+        var owner = _ownerResolver?.Invoke() ?? Application.Current.MainWindow;
+        if (owner != null && !ReferenceEquals(owner, window))
+        {
+            window.Owner = owner;
+        }
+
+        if (window.ShowDialog() != true || window.SelectedIndex < 0)
+        {
+            return null;
+        }
+
+        var selected = choices[window.SelectedIndex];
+        return new ExtensionChoiceResult
+        {
+            Index = window.SelectedIndex,
+            Label = selected.Label,
+            Description = selected.Description
+        };
     }
 }
 
@@ -217,6 +295,178 @@ internal sealed class ExtensionSelectWindow : Window
 
     /// <summary>获取选中的选项。</summary>
     public string? SelectedOption { get; private set; }
+}
+
+/// <summary>带说明文本的选项对话框：每条选项是一个卡片，标题在上、说明在下。</summary>
+internal sealed class ExtensionChoiceWindow : Window
+{
+    public ExtensionChoiceWindow(string title, string? message, IReadOnlyList<ExtensionChoice> choices)
+    {
+        Title = title;
+        Width = 560;
+        Height = Math.Min(620, 220 + (choices.Count * 74));
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        ShowInTaskbar = false;
+        Background = (System.Windows.Media.Brush)Application.Current.FindResource("SurfaceBrush");
+        FontFamily = (System.Windows.Media.FontFamily)Application.Current.FindResource("UiFont");
+
+        var list = new System.Windows.Controls.ListBox
+        {
+            ItemsSource = choices,
+            Margin = new Thickness(16, message == null ? 16 : 0, 16, 8),
+            Background = System.Windows.Media.Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            ItemContainerStyle = BuildItemStyle()
+        };
+
+        var itemTemplate = new DataTemplate(typeof(ExtensionChoice));
+        var stack = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
+        stack.SetValue(System.Windows.Controls.StackPanel.MarginProperty, new Thickness(10, 8, 10, 8));
+
+        var label = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        label.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(ExtensionChoice.Label)));
+        label.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 13.5);
+        label.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.SemiBold);
+        label.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, Application.Current.FindResource("TextBrush"));
+        label.SetValue(System.Windows.Controls.TextBlock.TextWrappingProperty, TextWrapping.Wrap);
+
+        var description = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+        description.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(ExtensionChoice.Description)));
+        description.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 12.0);
+        description.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, Application.Current.FindResource("TextSecondaryBrush"));
+        description.SetValue(System.Windows.Controls.TextBlock.TextWrappingProperty, TextWrapping.Wrap);
+        description.SetValue(System.Windows.Controls.TextBlock.MarginProperty, new Thickness(0, 3, 0, 0));
+
+        stack.AppendChild(label);
+        stack.AppendChild(description);
+        itemTemplate.VisualTree = stack;
+        list.ItemTemplate = itemTemplate;
+
+        var ok = new System.Windows.Controls.Button
+        {
+            Content = "确定",
+            Width = 88,
+            IsDefault = true,
+            Margin = new Thickness(0, 0, 8, 0),
+            Style = Application.Current.FindResource("PrimaryButton") as Style
+        };
+
+        var cancel = new System.Windows.Controls.Button
+        {
+            Content = "取消",
+            Width = 88,
+            IsCancel = true,
+            Style = Application.Current.FindResource("SecondaryButton") as Style
+        };
+
+        ok.Click += (_, _) =>
+        {
+            if (list.SelectedIndex < 0)
+            {
+                list.SelectedIndex = 0;
+            }
+
+            SelectedIndex = list.SelectedIndex;
+            DialogResult = true;
+        };
+
+        list.MouseDoubleClick += (_, _) =>
+        {
+            if (list.SelectedIndex >= 0)
+            {
+                SelectedIndex = list.SelectedIndex;
+                DialogResult = true;
+            }
+        };
+
+        var buttons = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(16, 0, 16, 16)
+        };
+        buttons.Children.Add(ok);
+        buttons.Children.Add(cancel);
+
+        var panel = new System.Windows.Controls.DockPanel();
+        System.Windows.Controls.DockPanel.SetDock(buttons, System.Windows.Controls.Dock.Bottom);
+        panel.Children.Add(buttons);
+
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            var messageBlock = new System.Windows.Controls.TextBlock
+            {
+                Text = message,
+                Foreground = (System.Windows.Media.Brush)Application.Current.FindResource("TextSecondaryBrush"),
+                FontSize = 12.5,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(16, 16, 16, 10)
+            };
+            System.Windows.Controls.DockPanel.SetDock(messageBlock, System.Windows.Controls.Dock.Top);
+            panel.Children.Add(messageBlock);
+        }
+
+        panel.Children.Add(list);
+        Content = panel;
+        Loaded += (_, _) =>
+        {
+            list.SelectedIndex = 0;
+            list.Focus();
+        };
+    }
+
+    /// <summary>获取用户选中的选项索引；未选择时为 -1。</summary>
+    public int SelectedIndex { get; private set; } = -1;
+
+    private static Style BuildItemStyle()
+    {
+        var style = new Style(typeof(System.Windows.Controls.ListBoxItem));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.MarginProperty, new Thickness(0, 0, 0, 6)));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.PaddingProperty, new Thickness(0)));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.BackgroundProperty, Application.Current.FindResource("BackgroundBrush")));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.BorderThicknessProperty, new Thickness(1)));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.BorderBrushProperty, Application.Current.FindResource("BorderSubtleBrush")));
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.CursorProperty, System.Windows.Input.Cursors.Hand));
+
+        var template = new System.Windows.Controls.ControlTemplate(typeof(System.Windows.Controls.ListBoxItem));
+        var border = new FrameworkElementFactory(typeof(System.Windows.Controls.Border));
+        border.SetValue(System.Windows.Controls.Border.BackgroundProperty,
+            new System.Windows.Data.Binding(nameof(System.Windows.Controls.Control.Background))
+            {
+                RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)
+            });
+        border.SetValue(System.Windows.Controls.Border.BorderBrushProperty,
+            new System.Windows.Data.Binding(nameof(System.Windows.Controls.Control.BorderBrush))
+            {
+                RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)
+            });
+        border.SetValue(System.Windows.Controls.Border.BorderThicknessProperty,
+            new System.Windows.Data.Binding(nameof(System.Windows.Controls.Control.BorderThickness))
+            {
+                RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.TemplatedParent)
+            });
+        border.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, new CornerRadius(6));
+        border.SetValue(System.Windows.Controls.Border.SnapsToDevicePixelsProperty, true);
+
+        var presenter = new FrameworkElementFactory(typeof(System.Windows.Controls.ContentPresenter));
+        presenter.SetValue(System.Windows.Controls.ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Stretch);
+        border.AppendChild(presenter);
+        template.VisualTree = border;
+
+        var hover = new Trigger { Property = System.Windows.Controls.Control.IsMouseOverProperty, Value = true };
+        hover.Setters.Add(new Setter(System.Windows.Controls.Control.BorderBrushProperty, Application.Current.FindResource("AccentBrush")));
+        template.Triggers.Add(hover);
+
+        var selected = new Trigger { Property = System.Windows.Controls.ListBoxItem.IsSelectedProperty, Value = true };
+        selected.Setters.Add(new Setter(System.Windows.Controls.Control.BackgroundProperty, Application.Current.FindResource("AccentSubtleBrush")));
+        selected.Setters.Add(new Setter(System.Windows.Controls.Control.BorderBrushProperty, Application.Current.FindResource("AccentBrush")));
+        template.Triggers.Add(selected);
+
+        style.Setters.Add(new Setter(System.Windows.Controls.Control.TemplateProperty, template));
+        return style;
+    }
 }
 
 /// <summary>

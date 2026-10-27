@@ -517,6 +517,11 @@ public sealed class WpfExtensionUiTests
         Assert.False(await ui.ConfirmAsync("t", "m"));
         Assert.Null(await ui.InputAsync("t"));
         Assert.Null(await ui.SelectAsync("t", new[] { "a", "b" }));
+        Assert.Null(await ui.ChooseAsync("t", "m", new[]
+        {
+            new ExtensionChoice { Label = "a", Description = "da" },
+            new ExtensionChoice { Label = "b", Description = "db" }
+        }));
     }
 
     [Fact]

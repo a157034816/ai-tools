@@ -31,6 +31,48 @@ public interface IExtensionUi
     Task<string?> SelectAsync(string title, IReadOnlyList<string> options, CancellationToken cancellationToken = default);
 }
 
+/// <summary>一个带说明文本的选项，用于需要解释后果的提问场景。</summary>
+public sealed class ExtensionChoice
+{
+    /// <summary>获取选项标签（简短，显示为条目标题）。</summary>
+    public string Label { get; init; } = string.Empty;
+
+    /// <summary>获取选项说明（解释该选项的含义或后果）。</summary>
+    public string? Description { get; init; }
+}
+
+/// <summary>用户在带说明选项中的选择结果。</summary>
+public sealed class ExtensionChoiceResult
+{
+    /// <summary>获取所选选项在列表中的索引。</summary>
+    public int Index { get; init; }
+
+    /// <summary>获取所选选项的标签。</summary>
+    public string Label { get; init; } = string.Empty;
+
+    /// <summary>获取所选选项的说明。</summary>
+    public string? Description { get; init; }
+}
+
+/// <summary>
+/// 宿主可选的富交互能力：让用户从每个都带说明的选项中挑选。
+/// 未实现该接口的宿主仍可只实现 <see cref="IExtensionUi"/>，调用方需自行退化到
+/// <see cref="IExtensionUi.SelectAsync"/> 或纯文本提问。
+/// </summary>
+public interface IExtensionChoiceUi
+{
+    /// <summary>让用户从带说明的选项中选择；取消时返回 null。</summary>
+    /// <param name="title">问题标题。</param>
+    /// <param name="message">选项上方的补充说明；可为 null。</param>
+    /// <param name="choices">选项列表，每项都带有说明文本。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    Task<ExtensionChoiceResult?> ChooseAsync(
+        string title,
+        string? message,
+        IReadOnlyList<ExtensionChoice> choices,
+        CancellationToken cancellationToken = default);
+}
+
 /// <summary>把扩展当作 provider 观察器接入 HTTP 层。</summary>
 internal sealed class ExtensionHttpObserver : AiTools.Core.Http.IAiHttpObserver
 {

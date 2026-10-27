@@ -396,6 +396,7 @@ public static class AiToolsWpf
     private static IReadOnlyList<AiTools.Extensions.IExtension> CreateDefaultExtensions()
         => new AiTools.Extensions.IExtension[]
         {
+            new AiTools.Extensions.BuiltIn.AskExtension(),
             new AiTools.Extensions.BuiltIn.GoalExtension(),
             new AiTools.Extensions.BuiltIn.PlanExtension()
         };

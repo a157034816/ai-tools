@@ -148,6 +148,7 @@ public sealed class ChatViewModel : ObservableObject
     private string? _pendingContinuation;
     private PluginSkillChatToolProvider? _pluginSkillProvider;
     private PluginMcpChatToolProvider? _pluginMcpProvider;
+    private readonly AiTools.Wpf.Asking.InlineAskHost _askHost = new();
 
     /// <summary>创建对话 ViewModel。在 <see cref="InitializeAsync"/> 运行之前不会访问全局服务。</summary>
     public ChatViewModel()
@@ -170,6 +171,17 @@ public sealed class ChatViewModel : ObservableObject
         ApplyCommandCommand = new RelayCommand(parameter => ApplyCommand(parameter as SlashCommandViewModel), parameter => parameter is SlashCommandViewModel);
         CloseCommandPaletteCommand = new RelayCommand(() => IsCommandPaletteOpen = false);
         InsertSlashCommand = new RelayCommand(InsertSlashPrefix, () => !IsBusy);
+        SelectAskOptionCommand = new RelayCommand(parameter => SelectAskOption(parameter), parameter => CurrentAskPrompt != null);
+        CloseAskCommand = new RelayCommand(CloseAsk, () => CurrentAskPrompt != null);
+
+        _askHost.Changed += (_, _) => OnUi(() =>
+        {
+            OnPropertyChanged(nameof(CurrentAskPrompt));
+            OnPropertyChanged(nameof(IsAskPanelOpen));
+            OnPropertyChanged(nameof(HasAskPrompt));
+            SelectAskOptionCommand.RaiseCanExecuteChanged();
+            CloseAskCommand.RaiseCanExecuteChanged();
+        });
 
         Messages.CollectionChanged += (_, _) => RaiseCommandStates();
 
@@ -370,6 +382,27 @@ public sealed class ChatViewModel : ObservableObject
 
     /// <summary>获取在输入框插入 <c>/</c> 的 Command。</summary>
     public RelayCommand InsertSlashCommand { get; }
+
+    /// <summary>获取选择内联提问面板中某个选项的 Command（参数是选项索引）。</summary>
+    public RelayCommand SelectAskOptionCommand { get; }
+
+    /// <summary>获取关闭内联提问面板（按取消处理）的 Command。</summary>
+    public RelayCommand CloseAskCommand { get; }
+
+    /// <summary>
+    /// 获取内联提问面板的宿主状态。宿主可把它接到自己的 <see cref="Asking.IAskPresenter"/>，
+    /// 或用 <see cref="Asking.InlineAskPresenter"/> 替换默认的弹窗行为。
+    /// </summary>
+    public AiTools.Wpf.Asking.InlineAskHost AskHost => _askHost;
+
+    /// <summary>获取当前待回答的提问；没有时为 null。</summary>
+    public AiTools.Wpf.Asking.AskPrompt? CurrentAskPrompt => _askHost.Current;
+
+    /// <summary>获取内联提问面板是否可见。</summary>
+    public bool IsAskPanelOpen => _askHost.HasPrompt;
+
+    /// <summary>获取是否有待回答的提问（供 <c>DataTrigger</c> 使用）。</summary>
+    public bool HasAskPrompt => _askHost.HasPrompt;
 
     /// <summary>获取命令面板中可用的插件斜杠命令。</summary>
     public ObservableCollection<SlashCommandViewModel> AvailableCommands { get; } = new();
@@ -1066,6 +1099,25 @@ public sealed class ChatViewModel : ObservableObject
         SelectedCommand = item;
     }
 
+    /// <summary>选择内联提问面板中的某个选项。</summary>
+    /// <param name="parameter">选项索引（<see cref="int"/> 或其可解析字符串）。</param>
+    private void SelectAskOption(object? parameter)
+    {
+        if (parameter is int index)
+        {
+            _askHost.Select(index);
+            return;
+        }
+
+        if (parameter is string text && int.TryParse(text, out var parsed))
+        {
+            _askHost.Select(parsed);
+        }
+    }
+
+    /// <summary>关闭内联提问面板；等待中的调用方收到"取消"。</summary>
+    private void CloseAsk() => _askHost.Cancel();
+
     /// <summary>根据输入内容刷新命令面板（仅在以 <c>/</c> 开头的第一个词上匹配）。</summary>
     private void UpdateCommandPalette(string text)
     {
@@ -1133,7 +1185,9 @@ public sealed class ChatViewModel : ObservableObject
             return;
         }
 
-        // ctx.Ui：通知直接进状态栏，对话框使用模态窗口（无 UI 宿主退化为非交互）。
+        // ctx.Ui：通知直接进状态栏；带说明的选项默认走输入框上方的内联面板（由本页 XAML 渲染），
+        // 宿主也可在 options.AskPresenter 里换成自己的呈现方式。
+        var askPresenter = AiToolsWpf.Options?.AskPresenter ?? new AiTools.Wpf.Asking.InlineAskPresenter(_askHost);
         _pipeline.Ui = new AiTools.Wpf.Extensions.WpfExtensionUi(
             (message, kind) => SetStatus(message, kind switch
             {
@@ -1142,7 +1196,8 @@ public sealed class ChatViewModel : ObservableObject
                 AiTools.Extensions.ExtensionNoticeKind.Error => StatusKind.Error,
                 _ => StatusKind.Info
             }),
-            text => SetStatus(text ?? string.Empty, StatusKind.Info));
+            text => SetStatus(text ?? string.Empty, StatusKind.Info),
+            askPresenter: askPresenter);
 
         RefreshAvailableCommands();
 
@@ -1491,7 +1546,11 @@ public sealed class ChatViewModel : ObservableObject
                             Runtime = _pipeline.Runtime,
                             State = _pipeline.Runtime.State,
                             ParentToolName = null,
-                            SessionId = CurrentConversationId
+                            SessionId = CurrentConversationId,
+                            WorkingDirectory = _pipeline.Session.WorkingDirectory,
+                            // 工具可能弹对话框（例如 ask）；不传 Ui 会让它在真实对话里永久不可用。
+                            Ui = _pipeline.Ui,
+                            EntryStore = _pipeline.Session.CreateContext(null, null).EntryStore
                         };
 
                         var toolResult = await _pipeline.Runtime.InvokeToolAsync(

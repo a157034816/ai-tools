@@ -106,6 +106,7 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 | `Permissions.cs` | `PermissionRule`/`PermissionPolicy`（deny > ask > allow）、`PermissionGate`、`ProjectTrust`、`AccessControl` |
 | `Workflows/` | `WorkflowDefinition`/`WorkflowLoader`、Jint 沙箱 `WorkflowRuntime`、把工作流变成命令的 `WorkflowCommandAdapter` |
 | `CommandCatalog.cs` | 合并扩展命令与插件命令，全名精确优先、短名冲突检测 |
+| `BuiltIn/AskExtension.cs` | 通用提问工具 `ask`：标题 + 带说明的选项；`IExtensionChoiceUi` 富对话框，其余宿主退化 |
 | `BuiltIn/GoalExtension.cs` | `/goal` + `goal_plan` / `goal_update` + 每轮目标注入 |
 | `BuiltIn/PlanExtension.cs` | `/plan` + `plan_save` / `plan_step` + 每轮计划注入 |
 | `BuiltIn/ExtensionManagerExtension.cs` | `/extension` 子命令：`list`/`scan`/`install`/`update`/`remove`/`reload`/`build` |

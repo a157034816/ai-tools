@@ -128,7 +128,18 @@ var choice = await ctx.Ui.SelectAsync("选择环境", new[] { "staging", "produc
 ctx.Ui.SetStatus("正在部署…");
 ```
 
-WPF 侧 `WpfExtensionUi` 把通知接到状态栏，`ConfirmAsync` / `InputAsync` / `SelectAsync` 使用模态窗口；无 `Application` 时退化为非交互（确认返回默认值，输入/选择返回 null）。宿主不提供 UI 时 `ctx.Ui` 为 null，扩展必须处理。
+WPF 侧 `WpfExtensionUi` 把通知接到状态栏，`ConfirmAsync` / `InputAsync` / `SelectAsync` 使用模态窗口，`ChooseAsync` 交给可替换的提问呈现策略（默认内联面板）；无 `Application` 时确认/输入/选择退化为非交互（确认返回默认值，输入/选择返回 null）。宿主不提供 UI 时 `ctx.Ui` 为 null，扩展必须处理。
+
+需要在选项上附带说明时，让 UI 实现可选的 `IExtensionChoiceUi.ChooseAsync(title, message, choices)`：`choices` 是 `ExtensionChoice { Label, Description }` 列表，返回 `ExtensionChoiceResult { Index, Label, Description }`（取消为 null）。调用方应检测接口可用性并退化到 `SelectAsync`，`ask` 工具与脚本侧的 `ctx.ui.choose` 都是这样做的。
+
+WPF 宿主把"怎么呈现"抽成了可替换的策略（`AiTools.Wpf.Asking.IAskPresenter`）：
+
+| 实现 | 行为 |
+|---|---|
+| `InlineAskPresenter`（默认） | 交给 `InlineAskHost`，由对话页在**输入框上方**绘制面板；`ChatViewModel.AskHost` / `CurrentAskPrompt` / `SelectAskOptionCommand` / `CloseAskCommand` 就是它的绑定面 |
+| 自定义 | 设置 `AiToolsWpfOptions.AskPresenter`；可以是模态窗口、控制台提示，或直接返回固定答案（自动化测试） |
+
+配置了呈现策略后 `WpfExtensionUi.HasDialogs` 恒为 true——内联面板由视图绘制，不依赖 WPF `Application`，因此无窗口的宿主（含单元测试）也能正常提问。
 
 ### 命令与工具上下文（`CommandContext` / `ToolContext`）
 
@@ -332,6 +343,21 @@ WPF 宿主在每轮结束、命令执行、工具调用后写入 `ConversationRe
 
 ## 内置扩展
 
+### `/ask`（`AskExtension`，工具 `ask`）
+
+通用提问工具：模型调用时传入一个 `title`、可选的 `message`，以及至少两个带 `description` 的选项，
+宿主弹出对话框让用户拍板，工具返回被选中的那一条。它不属于任何工作流——任何需要用户决策的场合都可以调用，
+`/plan` 只是把它当作记录计划前的前置步骤之一。
+
+| 宿主能力 | 行为 |
+|---|---|
+| 实现 `IExtensionChoiceUi` | 交给宿主的提问呈现策略；WPF 默认在输入框上方叠一个内联面板 |
+| 只实现 `IExtensionUi` | 退化为 `SelectAsync`，说明拼进选项标签 |
+| 没有任何 UI | 返回 `unavailable`，模型改为在对话里直接提问 |
+
+用户关闭对话框时返回 `cancelled`，模型应停下等待下一条消息而不是自行猜测。其它扩展可以用
+`AskExtension.ParseResult(json)` 解析工具返回值，判断是否真的得到了答案。
+
 ### `/goal`（`GoalExtension`）
 
 | 交互 | 行为 |
@@ -352,6 +378,7 @@ WPF 宿主在每轮结束、命令执行、工具调用后写入 `ConversationRe
 | `/plan` | 显示当前计划与完成度；无计划时给出用法 |
 | `plan_save` 工具 | 记录 context、steps（每步必须有 `verify`）、risks、outOfScope、openQuestions |
 | `plan_step` 工具 | `completeStep` / `approve` |
+| 前置提问 | 任务留有影响实现的开放决策时，先调用通用的 `ask` 工具收敛，再记录计划 |
 | 每轮 | 注入 `## Implementation plan`；未确认时明确写入 "NOT approved" |
 
 ## Workflows（JS 工作流）

@@ -394,9 +394,76 @@ public sealed class ScriptExtension : IExtension, IDisposable
         obj.FastAddProperty("confirm", new Func<string, string, bool, Task<bool>>((title, message, defaultValue) => ui.ConfirmAsync(title, message, defaultValue, token)), true, false, true);
         obj.FastAddProperty("input", new Func<string, string?, Task<string?>>((title, placeholder) => ui.InputAsync(title, placeholder, token)), true, false, true);
         obj.FastAddProperty("select", new Func<string, JsValue, Task<string?>>((title, choices) => ui.SelectAsync(title, choices.AsArray().ToArray().Select(item => item.ToString()).ToArray(), token)), true, false, true);
+        obj.FastAddProperty("choose", new Func<string, string?, JsValue, Task<JsValue>>((title, message, choices) =>
+            ChooseAsync(engine, ui, title, message, choices, token)), true, false, true);
         obj.FastAddProperty("notify", new Action<string, string?>((message, kind) => ui.Notify(message, ParseNoticeKind(kind))), true, false, true);
         obj.FastAddProperty("setStatus", new Action<string?>(ui.SetStatus), true, false, true);
         return obj;
+    }
+
+    /// <summary>
+    /// 脚本侧的带说明选项：参数是 <c>{ label, description }</c> 数组，
+    /// 返回 <c>{ index, label, description }</c>，取消时返回 null。
+    /// 宿主不支持富选项时退化为 <see cref="IExtensionUi.SelectAsync"/>（说明拼进标签）。
+    /// </summary>
+    private static async Task<JsValue> ChooseAsync(
+        Engine engine,
+        IExtensionUi ui,
+        string title,
+        string? message,
+        JsValue choicesValue,
+        CancellationToken token)
+    {
+        var labels = new List<string>();
+        var descriptions = new List<string>();
+        foreach (var item in choicesValue.AsArray().ToArray())
+        {
+            var label = item.IsObject() ? item.AsObject().Get("label").ToString() : item.ToString();
+            var description = item.IsObject() ? item.AsObject().Get("description").ToString() : string.Empty;
+            labels.Add(label);
+            descriptions.Add(description);
+        }
+
+        if (labels.Count == 0)
+        {
+            return JsValue.Null;
+        }
+
+        ExtensionChoiceResult? result = null;
+        if (ui is IExtensionChoiceUi choiceUi)
+        {
+            var choices = new List<ExtensionChoice>(labels.Count);
+            for (var index = 0; index < labels.Count; index++)
+            {
+                choices.Add(new ExtensionChoice { Label = labels[index], Description = descriptions[index] });
+            }
+
+            result = await choiceUi.ChooseAsync(title, message, choices, token).ConfigureAwait(false);
+        }
+        else
+        {
+            var decorated = new List<string>(labels.Count);
+            for (var index = 0; index < labels.Count; index++)
+            {
+                decorated.Add(descriptions[index].Length == 0 ? labels[index] : labels[index] + " — " + descriptions[index]);
+            }
+
+            var selected = await ui.SelectAsync(title, decorated, token).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(selected))
+            {
+                var index = decorated.IndexOf(selected!);
+                result = index >= 0
+                    ? new ExtensionChoiceResult { Index = index, Label = labels[index], Description = descriptions[index] }
+                    : new ExtensionChoiceResult { Index = -1, Label = selected! };
+            }
+        }
+
+        if (result == null)
+        {
+            return JsValue.Null;
+        }
+
+        return ToJs(engine, new { index = result.Index, label = result.Label, description = result.Description });
     }
 
     private static JsValue CreateEventObject(Engine engine, ExtensionEvent extensionEvent, object payload)

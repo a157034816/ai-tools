@@ -210,6 +210,97 @@ public sealed class ChatViewModelExtensionTests : IDisposable
     }
 
     [Fact]
+    public async Task AskTool_ShowsTheInlinePanelInsteadOfADialog()
+    {
+        _client.NextToolCall = new ToolCall(
+            "call-inline",
+            AskExtension.ToolName,
+            """{"title":"Which scope?","message":"决定改动范围。","options":[{"label":"Small","description":"Only the parser."},{"label":"Large","description":"Parser and callers."}]}""");
+
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+
+        // 默认配置下提问不弹窗，而是让对话页在输入框上方显示面板。
+        vm.InputText = "随便问一句";
+        var send = vm.SendAsync();
+        await WaitForAsync(() => vm.IsAskPanelOpen);
+
+        Assert.True(vm.IsAskPanelOpen, "ask 应打开内联面板；status=" + vm.StatusMessage);
+        var prompt = vm.CurrentAskPrompt!;
+        Assert.Equal("Which scope?", prompt.Title);
+        Assert.Equal("决定改动范围。", prompt.Message);
+        Assert.Equal(2, prompt.Options.Count);
+        Assert.Equal(1, prompt.Options[1].Index);
+
+        // 用户点击第二个选项。
+        vm.SelectAskOptionCommand.Execute(prompt.Options[1].Index);
+        await send;
+
+        Assert.False(vm.IsAskPanelOpen);
+
+        // 选择结果回传给模型的下一轮请求。
+        Assert.True(_client.Requests.Count >= 2);
+        var toolMessage = _client.Requests[^1].Messages
+            .Last(message => message.Role == ChatRole.Tool);
+        Assert.Contains("Parser and callers", toolMessage.GetText());
+    }
+
+    [Fact]
+    public async Task AskTool_CancelFromThePanel_ReportsCancellation()
+    {
+        _client.NextToolCall = new ToolCall(
+            "call-cancel",
+            AskExtension.ToolName,
+            """{"title":"Which scope?","options":[{"label":"Small","description":"Only the parser."},{"label":"Large","description":"Parser and callers."}]}""");
+
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+
+        vm.InputText = "随便问一句";
+        var send = vm.SendAsync();
+        await WaitForAsync(() => vm.IsAskPanelOpen);
+
+        vm.CloseAskCommand.Execute(null);
+        await send;
+
+        Assert.False(vm.IsAskPanelOpen);
+        var toolMessage = _client.Requests[^1].Messages
+            .Last(message => message.Role == ChatRole.Tool);
+        Assert.Contains("cancelled", toolMessage.GetText());
+    }
+
+    [Fact]
+    public async Task AskTool_ReceivesTheHostUiWhenTheModelCallsIt()
+    {
+        // 模型调用工具时宿主必须把 Ui 传进 ToolContext，否则 ask 在真实对话里永远只能返回 unavailable。
+        var ui = new RecordingChoiceUi();
+        _client.NextToolCall = new ToolCall(
+            "call-1",
+            AskExtension.ToolName,
+            """{"title":"Which scope?","options":[{"label":"Small","description":"Only the parser."},{"label":"Large","description":"Parser and callers."}]}""");
+
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+
+        // InitializeAsync 会安装宿主自己的 Ui；这里替换成可观察的实现。
+        AiToolsWpf.Pipeline!.Ui = ui;
+
+        vm.InputText = "随便问一句";
+        await vm.SendAsync();
+
+        var asked = Assert.Single(ui.Asked);
+        Assert.Equal("Which scope?", asked.Title);
+        Assert.Equal(2, asked.Choices.Count);
+
+        // 工具结果必须回传给模型的下一轮请求，否则模型看不到用户的选择。
+        Assert.True(_client.Requests.Count >= 2);
+        var toolMessage = _client.Requests[^1].Messages
+            .Last(message => message.Role == ChatRole.Tool);
+        Assert.Contains("\"selected\"", toolMessage.GetText());
+        Assert.Contains("Only the parser.", toolMessage.GetText());
+    }
+
+    [Fact]
     public async Task ExtensionState_SurvivesSaveAndRestore()
     {
         var vm = new ChatViewModel();
@@ -346,18 +437,19 @@ public sealed class ChatViewModelExtensionTests : IDisposable
 
     private sealed class CapturingChatClient : IChatClient
     {
+        private bool _toolCallConsumed;
+
         public List<ChatRequest> Requests { get; } = new();
+
+        /// <summary>下一个非流式/流式响应要发出的工具调用；每次只发一次。</summary>
+        public ToolCall? NextToolCall { get; set; }
 
         public string ProviderName => "capturing";
 
         public Task<ChatResponse> CompleteAsync(ChatRequest request, CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
-            return Task.FromResult(new ChatResponse
-            {
-                Message = ChatMessage.Assistant("ok"),
-                FinishReason = ChatFinishReason.Stop
-            });
+            return Task.FromResult(BuildResponse());
         }
 
         public async IAsyncEnumerable<ChatStreamUpdate> StreamAsync(
@@ -366,7 +458,88 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         {
             Requests.Add(request);
             await Task.CompletedTask;
+
+            // 流式回合只负责"宣告有工具调用"；真正的工具参数由随后的非流式请求提供
+            // （StreamWithToolsExactAsync 的保真路径），因此这里不消费调用。
+            if (!_toolCallConsumed && NextToolCall != null)
+            {
+                yield return new ChatStreamUpdate
+                {
+                    ToolCallDelta = new ToolCallDelta
+                    {
+                        Index = 0,
+                        Id = NextToolCall.Id,
+                        Name = NextToolCall.Name,
+                        ArgumentsDelta = NextToolCall.ArgumentsJson
+                    },
+                    FinishReason = ChatFinishReason.ToolCalls
+                };
+                yield break;
+            }
+
             yield return new ChatStreamUpdate { TextDelta = "ok", FinishReason = ChatFinishReason.Stop };
+        }
+
+        private ChatResponse BuildResponse()
+        {
+            var call = TakeToolCall();
+            return call == null
+                ? new ChatResponse
+                {
+                    Message = ChatMessage.Assistant("ok"),
+                    FinishReason = ChatFinishReason.Stop
+                }
+                : new ChatResponse
+                {
+                    Message = ChatMessage.AssistantWithToolCalls(new[] { call }),
+                    FinishReason = ChatFinishReason.ToolCalls
+                };
+        }
+
+        private ToolCall? TakeToolCall()
+        {
+            if (_toolCallConsumed || NextToolCall == null)
+            {
+                return null;
+            }
+
+            _toolCallConsumed = true;
+            return NextToolCall;
+        }
+    }
+
+    private sealed class RecordingChoiceUi : IExtensionUi, IExtensionChoiceUi
+    {
+        public List<(string Title, IReadOnlyList<ExtensionChoice> Choices)> Asked { get; } = new();
+
+        public bool HasDialogs => true;
+
+        public void Notify(string message, ExtensionNoticeKind kind = ExtensionNoticeKind.Info) { }
+
+        public void SetStatus(string? text) { }
+
+        public Task<bool> ConfirmAsync(string title, string message, bool defaultValue = false, CancellationToken cancellationToken = default)
+            => Task.FromResult(defaultValue);
+
+        public Task<string?> InputAsync(string title, string? placeholder = null, CancellationToken cancellationToken = default)
+            => Task.FromResult<string?>(null);
+
+        public Task<string?> SelectAsync(string title, IReadOnlyList<string> options, CancellationToken cancellationToken = default)
+            => Task.FromResult<string?>(null);
+
+        public Task<ExtensionChoiceResult?> ChooseAsync(
+            string title,
+            string? message,
+            IReadOnlyList<ExtensionChoice> choices,
+            CancellationToken cancellationToken = default)
+        {
+            Asked.Add((title, choices));
+            return Task.FromResult<ExtensionChoiceResult?>(new ExtensionChoiceResult
+            {
+                Index = 0,
+                Label = choices[0].Label,
+                Description = choices[0].Description
+            });
         }
     }
 }

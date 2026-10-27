@@ -124,6 +124,21 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 - Enter 发送 / Shift+Enter 换行
 - 斜杠命令面板：输入 `/` 列出插件命令，`↑`/`↓` 选择、`Enter` 插入、`Esc` 关闭
 - 内置斜杠命令：`/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help [关键字]`
+- 内联提问面板：模型调用 `ask` 时，标题与带说明的选项叠在输入框上方；点击选项即回答，点「取消」让模型等待下一条消息
+
+### 替换提问的呈现方式
+
+默认内联面板由 `ChatViewModel.AskHost` 驱动，宿主可以整体换掉：
+
+```csharp
+AiToolsWpf.Initialize(new AiToolsWpfOptions
+{
+    // 换成模态对话框、命令行提示，或自动化测试里的固定答案。
+    AskPresenter = new MyDialogAskPresenter()
+});
+```
+
+`IAskPresenter.AskAsync(AskPrompt, CancellationToken)` 收到标题、说明与 `AskPromptOption[]`（每项含 `Label` / `Description` / `Index`），返回 `AskResponse.Select(index)` 或 `AskResponse.Cancel()`。不设置时使用 `InlineAskPresenter`，对应的 XAML 就在 `ChatPage.xaml` 输入区顶部，可以直接改样式或重写这段模板。
 
 ### ChatViewModel 公开 API
 
