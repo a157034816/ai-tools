@@ -510,6 +510,18 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 | `/workflows:goal` | 插件命令 `workflows:goal` |
 | 短名冲突时 | 面板插入限定名，例如 `/workflows:goal ` |
 
+### 技能命令（`/skill:`）
+
+每个 skill 都会额外生成一条 `/skill:<名称>` 命令，直接执行即把技能正文渲染成提示词发送给模型，无需先让模型调用 `load_skill`：
+
+| 输入 | 命中 |
+|---|---|
+| `/skill:review` | 该 skill（短名唯一时） |
+| `/skill:plugin:review` | 同名 skill 出现在多个插件时的限定名 |
+| `/plugin:review` | 技能原本生成的插件命令，与上一条共用同一个 `PluginCommand` |
+
+在命令面板输入 `/` 后，不带前缀的技能名（如 `/review`）同样能搜到该技能。`user-invocable: false` 的 skill 不生成命令，仍可经 `load_skill` 由模型加载。
+
 ### 插件侧限制
 
 `agents`、`hooks`、`lspServers`、`themes`、`monitors`、`channels`、`userConfig` 仍不执行，加载时以 `Info` 级诊断说明被忽略。`outputStyles` 与 `workflows` 已支持（见「输出风格」与「Workflows」两节）；`allowed-tools` 仍只作为元数据，工具是否放行由 `PermissionPolicy` 决定。

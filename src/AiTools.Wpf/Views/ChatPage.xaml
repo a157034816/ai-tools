@@ -558,7 +558,7 @@
                                 Click="SendButton_Click" />
                     </StackPanel>
                 </Grid>
-                <TextBlock Text="Enter 发送，Shift+Enter 换行，输入 / 选择插件命令" Style="{StaticResource Hint}"
+                <TextBlock Text="Enter 发送，Shift+Enter 换行，输入 / 选择命令或技能（/skill:名称）" Style="{StaticResource Hint}"
                            Margin="0,8,0,0" />
             </StackPanel>
         </Border>

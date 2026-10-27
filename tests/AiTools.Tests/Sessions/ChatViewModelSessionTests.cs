@@ -58,6 +58,53 @@ public sealed class ChatViewModelSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task BuiltInCommands_WorkFromTheInputBoxWithoutAConfiguredModel()
+    {
+        // 本测试的配置里没有任何 provider/model：/fork 与 /resume 仍然必须能用，
+        // 因为它们不调用模型。
+        await _store.SaveAsync(Seed("已保存", ("user", "问题"), ("assistant", "回答")));
+
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+
+        Assert.Null(vm.SelectedProvider);
+        Assert.Null(vm.SelectedModel);
+
+        vm.InputText = "/resume";
+        await vm.SendAsync();
+
+        await WaitForAsync(() => vm.IsResumePickerOpen);
+        Assert.True(vm.IsResumePickerOpen, vm.StatusMessage);
+        Assert.Contains(vm.SavedConversations, item => item.Title == "已保存");
+
+        vm.CloseResumePicker();
+        Assert.False(vm.IsResumePickerOpen);
+    }
+
+    [Fact]
+    public async Task ForkFromTheInputBox_CreatesANewConversation()
+    {
+        await _store.SaveAsync(Seed("原始对话", ("user", "问题"), ("assistant", "回答")));
+
+        var vm = new ChatViewModel();
+        await vm.InitializeAsync();
+        await vm.OpenResumePickerAsync();
+        await WaitForAsync(() => vm.SavedConversations.Count == 1);
+        await vm.LoadConversationAsync(vm.SavedConversations[0]);
+        await WaitForAsync(() => vm.Messages.Count == 2);
+
+        var sourceId = vm.CurrentConversationId;
+
+        vm.InputText = "/fork";
+        await vm.SendAsync();
+        await WaitForAsync(() => vm.CurrentConversationId != sourceId);
+
+        Assert.NotEqual(sourceId, vm.CurrentConversationId);
+        Assert.Equal(2, vm.Messages.Count);
+        Assert.Contains("原始对话", vm.ConversationTitle);
+    }
+
+    [Fact]
     public async Task Resume_ListsSavedConversations()
     {
         await _store.SaveAsync(Seed("对话 A", ("user", "你好"), ("assistant", "你好！")));

@@ -386,7 +386,7 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 });
 ```
 
-`commands/*.md` 与 `skills/*/SKILL.md` 都成为斜杠命令（`/plugin:command`，短名不冲突时也可 `/command`），正文支持 `$ARGUMENTS`、`$1`、`${CLAUDE_PLUGIN_ROOT}` 等占位符；`skills/` 同时经 `load_skill` 交给模型按需加载，`.mcp.json` 声明的服务器自动连接，`output-styles/*.md` 成为可选风格（`/output-style`），`workflows/*.js` 成为斜杠命令与 `workflow_list` 工具。扩展命令优先于同名插件短名，冲突时面板插入限定名。
+`commands/*.md` 与 `skills/*/SKILL.md` 都成为斜杠命令（`/plugin:command`，短名不冲突时也可 `/command`），正文支持 `$ARGUMENTS`、`$1`、`${CLAUDE_PLUGIN_ROOT}` 等占位符；每个 skill 另有一条 `/skill:<名称>` 入口，直接执行即把技能正文作为提示词发送（不带前缀的技能名也能在面板里搜到）。`skills/` 同时经 `load_skill` 交给模型按需加载，`.mcp.json` 声明的服务器自动连接，`output-styles/*.md` 成为可选风格（`/output-style`），`workflows/*.js` 成为斜杠命令与 `workflow_list` 工具。扩展命令优先于同名插件短名，冲突时面板插入限定名。
 
 详见 [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md)。
 

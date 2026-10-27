@@ -562,7 +562,14 @@ public sealed class ChatViewModel : ObservableObject
             return;
         }
 
-        if (SelectedProvider == null || SelectedModel == null)
+        // 会话命令（/resume、/fork、/new、/help…）不调用模型，因此必须在挑选
+        // provider/model 之前处理：否则没配置模型时连恢复和分叉都用不了。
+        // 这里只做一次"是不是会话命令"的快速判定，真正的处理仍在 input 事件之后，
+        // 保证扩展仍能观察、改写或吞掉这些输入。
+        var builtInCandidate = AiTools.Extensions.PluginHost.LooksLikeCommand(text) &&
+                               IsBuiltInCommand(text);
+
+        if (!builtInCandidate && (SelectedProvider == null || SelectedModel == null))
         {
             SetStatus("请先选择可用的服务商和模型。", StatusKind.Warning);
             return;
@@ -594,10 +601,21 @@ public sealed class ChatViewModel : ObservableObject
                 {
                     return;
                 }
+
+                // 扩展可能把输入改写掉，重新判定是否需要模型。
+                builtInCandidate = AiTools.Extensions.PluginHost.LooksLikeCommand(text) &&
+                                   IsBuiltInCommand(text);
             }
 
-            if (await TryInvokeBuiltInCommandAsync(text).ConfigureAwait(false))
+            if (builtInCandidate)
             {
+                await TryInvokeBuiltInCommandAsync(text).ConfigureAwait(false);
+                return;
+            }
+
+            if (SelectedProvider == null || SelectedModel == null)
+            {
+                SetStatus("请先选择可用的服务商和模型。", StatusKind.Warning);
                 return;
             }
 
@@ -872,6 +890,39 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>获取合并后的命令目录（扩展命令 + 插件命令）。</summary>
     public AiTools.Extensions.CommandCatalog? Commands => _pipeline?.Commands;
 
+    /// <summary>宿主内置会话命令的定义：名称、说明与参数提示。</summary>
+    private static readonly (string Name, string Description, string? Hint)[] BuiltInCommandDefinitions =
+    {
+        ("resume", "恢复已保存的对话", null),
+        ("fork", "把当前对话分叉为新对话", null),
+        ("new", "开始一个新对话", null),
+        ("clear", "清空当前对话", null),
+        ("settings", "打开设置页", null),
+        ("help", "列出可用命令", "[关键字]"),
+        ("output-style", "查看或切换输出风格", "[名称]")
+    };
+
+    /// <summary>判断输入是否为宿主内置的会话命令（不调用模型）。</summary>
+    /// <param name="text">用户输入。</param>
+    public static bool IsBuiltInCommand(string text)
+    {
+        if (!AiTools.Extensions.PluginHost.LooksLikeCommand(text))
+        {
+            return false;
+        }
+
+        var (name, _) = AiTools.Extensions.PluginHost.SplitCommand(text);
+        foreach (var definition in BuiltInCommandDefinitions)
+        {
+            if (string.Equals(definition.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// 处理宿主的会话级斜杠命令（<c>/resume</c>、<c>/fork</c>、<c>/clear</c>、<c>/new</c>、<c>/settings</c>、<c>/help</c>）。
     /// 返回 true 表示已处理，调用方应停止后续处理。
@@ -924,7 +975,6 @@ public sealed class ChatViewModel : ObservableObject
                 return false;
         }
     }
-
     /// <summary>
     /// 执行扩展/插件斜杠命令。未命中命令返回 false（调用方按普通消息处理）；
     /// 命中后无论成功失败都返回 true，避免把 <c>/xxx</c> 原样发给模型。
@@ -992,27 +1042,43 @@ public sealed class ChatViewModel : ObservableObject
 
     private void ShowCommandHelp(string filter)
     {
+        var needle = (filter ?? string.Empty).Trim();
         var matched = AvailableCommands
-            .Where(item => string.IsNullOrWhiteSpace(filter) ||
-                           item.ShortName.IndexOf(filter.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+            .Where(item => needle.Length == 0 ||
+                           item.ShortName.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           item.Keywords.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
             .ToArray();
 
-        var lines = new List<string>
+        var lines = new List<string>();
+
+        var builtIn = matched.Where(item => item.IsBuiltIn).ToArray();
+        if (builtIn.Length > 0)
         {
-            "会话命令：/resume · /fork · /new · /clear · /settings · /help [关键字] · /output-style [名称]"
-        };
+            lines.Add("会话命令：");
+            foreach (var item in builtIn)
+            {
+                lines.Add($"  {item.Title} — {item.Description}");
+            }
+        }
+
+        var extensions = matched.Where(item => !item.IsBuiltIn).ToArray();
+        if (extensions.Length > 0)
+        {
+            if (lines.Count > 0)
+            {
+                lines.Add(string.Empty);
+            }
+
+            lines.Add("扩展、插件与技能命令：");
+            foreach (var item in extensions)
+            {
+                lines.Add($"  {item.Title} — {item.Description}");
+            }
+        }
 
         if (matched.Length == 0)
         {
             lines.Add("没有匹配的命令。");
-        }
-        else
-        {
-            lines.Add("扩展与插件命令：");
-            foreach (var item in matched)
-            {
-                lines.Add($"  {item.Title} — {item.Description}");
-            }
         }
 
         AppendAssistantBubble(string.Join(Environment.NewLine, lines));
@@ -1137,9 +1203,11 @@ public sealed class ChatViewModel : ObservableObject
 
         RefreshAvailableCommands();
 
+        // 技能命令同时接受不带 skill: 前缀的技能名（/review 命中 /skill:review）。
         var matches = AvailableCommands
             .Where(item => item.ShortName.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                           item.Name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                           item.Name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           item.Keywords.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
             .ToArray();
 
         IsCommandPaletteOpen = matches.Length > 0;
@@ -1149,16 +1217,20 @@ public sealed class ChatViewModel : ObservableObject
     /// <summary>从扩展管道同步命令列表。可在插件或扩展重新加载后调用。</summary>
     public void RefreshAvailableCommands()
     {
-        var commands = _pipeline?.Commands.Commands;
-        if (commands == null || commands.Count == 0)
+        // 内置会话命令始终可用（即使没有任何扩展或插件），因此排在最前面。
+        var commands = new List<SlashCommandViewModel>();
+        foreach (var definition in BuiltInCommandDefinitions)
         {
-            if (AvailableCommands.Count > 0)
-            {
-                AvailableCommands.Clear();
-                OnPropertyChanged(nameof(HasPluginCommands));
-            }
+            commands.Add(new SlashCommandViewModel(definition.Name, definition.Description, definition.Hint));
+        }
 
-            return;
+        var extensionCommands = _pipeline?.Commands.Commands;
+        if (extensionCommands != null)
+        {
+            foreach (var command in extensionCommands.OrderBy(item => item.ShortName, StringComparer.OrdinalIgnoreCase))
+            {
+                commands.Add(new SlashCommandViewModel(command));
+            }
         }
 
         if (AvailableCommands.Count == commands.Count &&
@@ -1168,9 +1240,9 @@ public sealed class ChatViewModel : ObservableObject
         }
 
         AvailableCommands.Clear();
-        foreach (var command in commands.OrderBy(item => item.ShortName, StringComparer.OrdinalIgnoreCase))
+        foreach (var command in commands)
         {
-            AvailableCommands.Add(new SlashCommandViewModel(command));
+            AvailableCommands.Add(command);
         }
 
         OnPropertyChanged(nameof(HasPluginCommands));
@@ -1180,8 +1252,11 @@ public sealed class ChatViewModel : ObservableObject
     private void InitializeExtensions(AiToolsWpfOptions options)
     {
         _pipeline = AiToolsWpf.Pipeline;
+
+        // 内置会话命令不依赖扩展管道，没有 pipeline 时也要进候选面板。
         if (_pipeline == null)
         {
+            RefreshAvailableCommands();
             return;
         }
 

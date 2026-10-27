@@ -122,8 +122,9 @@ AiToolsWpf.RegisterToolProvider(new OrderToolProvider());
 - Token 用量展示
 - 空状态引导（无可用服务商时跳转设置）
 - Enter 发送 / Shift+Enter 换行
-- 斜杠命令面板：输入 `/` 列出插件命令，`↑`/`↓` 选择、`Enter` 插入、`Esc` 关闭
-- 内置斜杠命令：`/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help [关键字]`
+- 斜杠命令面板：输入 `/` 列出所有命令（内置会话命令、扩展命令、插件命令与 `skill:` 技能命令），`↑`/`↓` 选择、`Enter` 插入、`Esc` 关闭
+- 内置斜杠命令：`/resume`、`/fork`、`/new`、`/clear`、`/settings`、`/help [关键字]`、`/output-style [名称]`；这些命令不调用模型，未配置服务商时同样可用
+- 技能命令：每个 skill 以 `/skill:<名称>` 列出，直接执行即把技能正文作为提示词发送；输入 `/` 后也能用不带前缀的技能名搜到
 - 内联提问面板：模型调用 `ask` 时，标题与带说明的选项叠在输入框上方；点击选项即回答，点「取消」让模型等待下一条消息
 
 ### 替换提问的呈现方式

@@ -79,7 +79,6 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         await vm.InitializeAsync();
 
         // 内置扩展提供 /goal 与 /plan；测试插件另提供 /workflows:goal。
-        Assert.Equal(3, vm.AvailableCommands.Count);
         var goal = Assert.Single(vm.AvailableCommands, item => item.Name == "goal");
         Assert.Equal("/goal <目标描述>", goal.Title);
         Assert.True(goal.IsCodeCommand);
@@ -90,6 +89,11 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         Assert.True(pluginCommand.IsAmbiguous);
         Assert.Equal("/workflows:goal ", pluginCommand.Insertion);
         Assert.True(vm.HasPluginCommands);
+
+        // 会话命令（/fork、/resume 等）不依赖任何扩展，必须同样出现在候选面板里。
+        Assert.Contains(vm.AvailableCommands, item => item.Name == "fork" && item.IsBuiltIn);
+        Assert.Contains(vm.AvailableCommands, item => item.Name == "resume" && item.IsBuiltIn);
+        Assert.All(vm.AvailableCommands.Where(item => item.IsBuiltIn), item => Assert.Equal("内置", item.Source));
     }
 
     [Fact]
@@ -100,7 +104,7 @@ public sealed class ChatViewModelExtensionTests : IDisposable
 
         vm.InputText = "/g";
         Assert.True(vm.IsCommandPaletteOpen);
-        Assert.Equal("goal", vm.SelectedCommand!.ShortName);
+        Assert.Contains(vm.AvailableCommands, item => item.Name == "goal");
 
         vm.InputText = "/g now with args";
         Assert.False(vm.IsCommandPaletteOpen);
@@ -116,9 +120,12 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         await vm.InitializeAsync();
         vm.InputText = "/";
 
-        vm.ApplyCommandCommand.Execute(vm.AvailableCommands[0]);
+        // 面板第一项是内置会话命令 /resume。
+        var first = vm.AvailableCommands[0];
+        Assert.True(first.IsBuiltIn);
+        vm.ApplyCommandCommand.Execute(first);
 
-        Assert.Equal("/goal ", vm.InputText);
+        Assert.Equal("/resume ", vm.InputText);
         Assert.False(vm.IsCommandPaletteOpen);
     }
 
@@ -357,6 +364,85 @@ public sealed class ChatViewModelExtensionTests : IDisposable
         var request = Assert.Single(_client.Requests);
         Assert.Contains("Reviews a diff.", request.SystemPrompt);
         Assert.Contains("load_skill", request.SystemPrompt);
+    }
+
+    [Fact]
+    public async Task SkillCommands_AppearInThePaletteAndRunFromTheInputBox()
+    {
+        // 技能只在插件加载时被发现；单独初始化一份带技能的宿主。
+        var skillRoot = Path.Combine(Path.GetTempPath(), "aitools-vm-skills-" + Guid.NewGuid().ToString("N"));
+        var pluginRoot = Path.Combine(skillRoot, "skills-plugin");
+        Directory.CreateDirectory(Path.Combine(pluginRoot, ".claude-plugin"));
+        Directory.CreateDirectory(Path.Combine(pluginRoot, "skills", "review"));
+        File.WriteAllText(
+            Path.Combine(pluginRoot, ".claude-plugin", "plugin.json"),
+            """{"name":"skills-plugin"}""");
+        File.WriteAllText(
+            Path.Combine(pluginRoot, "skills", "review", "SKILL.md"),
+            "---\ndescription: Reviews a diff.\n---\nReview the changed files carefully.");
+
+        AiToolsWpf.Reset();
+        AiToolsWpf.Initialize(options =>
+        {
+            options.ConversationStore = new InMemoryConversationStore();
+            options.SettingsStore = new FixedSettingsStore(providerConfig: new ProviderConfig
+            {
+                Id = "test",
+                DisplayName = "Test",
+                Protocol = ProviderProtocols.OpenAi,
+                BaseUrl = "https://example.com/v1",
+                ApiKey = "test-key",
+                Models = new List<ModelConfig> { new() { Id = "test-model", Enabled = true } }
+            });
+            options.ProviderFactory = new FixedProviderFactory(_client);
+            options.PluginsDirectory = skillRoot;
+            options.AllowPluginShellExecution = false;
+        });
+
+        try
+        {
+            var vm = new ChatViewModel();
+            await vm.InitializeAsync();
+
+            // 每个 skill 都列出 /skill:<name>，且原本的插件命令名保留（同一技能两条入口）。
+            var skillCommand = Assert.Single(
+                vm.AvailableCommands,
+                item => item.Source == "skill" && item.ShortName.StartsWith("skill:", StringComparison.Ordinal));
+            Assert.Equal("skill:skills-plugin:review", skillCommand.Name);
+            Assert.Equal("skill:review", skillCommand.ShortName);
+            Assert.Contains("Reviews a diff.", skillCommand.Description);
+            Assert.Contains(
+                vm.AvailableCommands,
+                item => item.Source == "skill" && item.Name == "skills-plugin:review");
+
+            // 不带前缀的技能名也能在面板里搜到。
+            vm.InputText = "/review";
+            Assert.True(vm.IsCommandPaletteOpen, "输入 /review 应命中 /skill:review");
+            Assert.NotNull(vm.SelectedCommand);
+            Assert.True(
+                vm.SelectedCommand!.ShortName == "skill:review" || vm.SelectedCommand.Name == "skills-plugin:review",
+                "选中项应是该技能的某条入口：" + vm.SelectedCommand.Name);
+
+            // 直接执行：技能正文成为提示词。
+            vm.InputText = "/skill:review 关注错误处理";
+            await vm.SendAsync();
+
+            var request = Assert.Single(_client.Requests);
+            var userMessage = request.Messages[^1];
+            Assert.Equal(ChatRole.User, userMessage.Role);
+            Assert.Contains("Review the changed files carefully.", userMessage.GetText());
+            Assert.Contains("关注错误处理", userMessage.GetText());
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(skillRoot, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
     }
 
     [Fact]

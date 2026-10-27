@@ -8,9 +8,12 @@ using AiTools.Abstractions;
 
 namespace AiTools.Extensions;
 
-/// <summary>统一后的斜杠命令：来源既可以是扩展代码，也可以是 Claude Code 插件的 Markdown 文件。</summary>
+/// <summary>统一后的斜杠命令：来源既可以是扩展代码，也可以是 Claude Code 插件的 Markdown 文件或 skill。</summary>
 public sealed class ResolvedCommand
 {
+    /// <summary>技能命令的前缀，例如 <c>/skill:review</c>。</summary>
+    public const string SkillPrefix = "skill:";
+
     /// <summary>获取命令名（不带 <c>/</c>）。扩展命令不带插件前缀；插件命令带 <c>plugin:</c> 前缀。</summary>
     public string Name { get; init; } = string.Empty;
 
@@ -32,8 +35,14 @@ public sealed class ResolvedCommand
     /// <summary>获取插件命令定义；扩展命令时为 null。</summary>
     public PluginCommand? PluginCommand { get; init; }
 
+    /// <summary>获取由 skill 生成的命令所对应的 skill；普通命令时为 null。</summary>
+    public PluginSkill? Skill { get; init; }
+
     /// <summary>获取是否为代码实现的扩展命令。</summary>
     public bool IsCodeCommand => ExtensionCommand != null;
+
+    /// <summary>获取命令是否由 skill 提供。</summary>
+    public bool IsSkillCommand => Skill != null;
 
     /// <summary>获取短名是否与其它命令冲突。</summary>
     public bool IsAmbiguous { get; set; }
@@ -162,8 +171,20 @@ public sealed class CommandCatalog
 
         if (plugins != null)
         {
+            // 由 skill 生成的命令与 skill 一一对应（同一 SourcePath / SkillDirectory），
+            // 面板据此把这类命令同时以 /skill:<name> 暴露。
+            var skillsByPath = new Dictionary<string, PluginSkill>(StringComparer.OrdinalIgnoreCase);
+            foreach (var skill in plugins.Skills)
+            {
+                if (skill.Command != null)
+                {
+                    skillsByPath[skill.Command.Name] = skill;
+                }
+            }
+
             foreach (var command in plugins.Commands.Where(item => item.UserInvocable))
             {
+                skillsByPath.TryGetValue(command.Name, out var sourceSkill);
                 commands.Add(new ResolvedCommand
                 {
                     Name = command.Name,
@@ -171,12 +192,48 @@ public sealed class CommandCatalog
                     ArgumentHint = command.ArgumentHint,
                     Description = command.Description,
                     Source = command.PluginName,
-                    PluginCommand = command
+                    PluginCommand = command,
+                    Skill = sourceSkill
                 });
             }
+
+            commands.AddRange(CreateSkillCommands(plugins));
         }
 
         return new CommandCatalog(commands, plugins, runtime);
+    }
+
+    /// <summary>
+    /// 为每个 skill 生成 <c>/skill:&lt;name&gt;</c> 命令，让用户可以直接用滑杠命令调用技能，
+    /// 而不必先让模型 <c>load_skill</c>。技能名冲突时使用带插件前缀的限定名。
+    /// </summary>
+    /// <remarks>
+    /// 技能同时保留它原本的插件命令名（例如 <c>/review</c> 与 <c>/plugin:review</c>），
+    /// 两条入口共用同一个 <see cref="PluginCommand"/>，渲染与执行完全一致。
+    /// </remarks>
+    private static IEnumerable<ResolvedCommand> CreateSkillCommands(PluginCatalog plugins)
+    {
+        // user-invocable: false 的 skill 不生成可执行命令，但仍可经 load_skill 由模型加载。
+        var skills = plugins.Skills.Where(skill => skill.Command != null).ToArray();
+        var shortNameCounts = skills
+            .GroupBy(skill => skill.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var skill in skills)
+        {
+            var unique = shortNameCounts[skill.Name] == 1;
+            yield return new ResolvedCommand
+            {
+                // 短名同时接受 /skill:review 与 /skill:plugin:review，全名始终唯一。
+                Name = ResolvedCommand.SkillPrefix + skill.QualifiedName,
+                ShortName = ResolvedCommand.SkillPrefix + (unique ? skill.Name : skill.QualifiedName),
+                ArgumentHint = skill.Command!.ArgumentHint ?? "[指令]",
+                Description = skill.Description,
+                Source = skill.PluginName,
+                PluginCommand = skill.Command,
+                Skill = skill
+            };
+        }
     }
 }
 

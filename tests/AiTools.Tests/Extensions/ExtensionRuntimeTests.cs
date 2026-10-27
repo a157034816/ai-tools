@@ -818,9 +818,129 @@ public sealed class CommandCatalogTests
         Assert.Equal("Body: ship", pluginExecution.Prompt);
     }
 
-    [Fact]
-    public async Task Pipeline_UnknownCommand_ReturnsNull()
+    /// <summary>构造一个只带 skill 的插件目录，返回加载后的插件目录。</summary>
+    private static (PluginCatalog Catalog, string Root) CreateSkillPlugins()
     {
+        var root = Path.Combine(Path.GetTempPath(), "aitools-skillcmd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "skills-plugin", ".claude-plugin"));
+        File.WriteAllText(
+            Path.Combine(root, "skills-plugin", ".claude-plugin", "plugin.json"),
+            """{"name":"skills-plugin"}""");
+        Directory.CreateDirectory(Path.Combine(root, "skills-plugin", "skills", "review"));
+        File.WriteAllText(
+            Path.Combine(root, "skills-plugin", "skills", "review", "SKILL.md"),
+            "---\ndescription: Reviews a pull request.\n---\nReview the changed files.");
+        return (PluginCatalog.LoadFromDirectory(root), root);
+    }
+
+    [Fact]
+    public async Task SkillsAreExposedAsSkillPrefixedCommands()
+    {
+        var (plugins, root) = CreateSkillPlugins();
+        try
+        {
+            var pipeline = new ExtensionPipeline(new ExtensionPipelineOptions
+            {
+                Extensions = Array.Empty<IExtension>(),
+                Plugins = plugins,
+                PluginHostOptions = new PluginHostOptions { EnableShellExecution = false },
+                WorkingDirectory = Environment.CurrentDirectory
+            });
+
+            // 每个 skill 都有一条 /skill:<name> 入口。
+            var skillCommand = Assert.Single(
+                pipeline.Commands.Commands,
+                item => item.Name == ResolvedCommand.SkillPrefix + "skills-plugin:review");
+            Assert.True(skillCommand.IsSkillCommand);
+            Assert.Equal("skills-plugin", skillCommand.Source);
+
+            // 短名同样可以命中：/skill:review。
+            Assert.True(pipeline.Commands.TryResolve("skill:review", out var resolved));
+            Assert.Equal(skillCommand.Name, resolved!.Name);
+
+            // 执行时复用技能生成的插件命令：技能正文成为提示词。
+            var execution = await pipeline.ExecuteCommandAsync(
+                "/skill:review",
+                pipeline.Session.CreateContext(null, null));
+            Assert.Equal(CommandExecutionKind.Prompt, execution!.Kind);
+            Assert.Contains("Review the changed files.", execution.Prompt);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public void SkillCommands_KeepTheOriginalPluginCommandName()
+    {
+        var (plugins, root) = CreateSkillPlugins();
+        try
+        {
+            var catalog = CommandCatalog.Create(null, plugins);
+
+            // 技能原本的插件命令名（/skills-plugin:review）依然可解析，且标记为技能来源。
+            Assert.True(catalog.TryResolve("skills-plugin:review", out var original));
+            Assert.True(original!.IsSkillCommand);
+
+            // 面板可见两条入口：原命令与 /skill: 前缀。
+            Assert.Contains(catalog.Commands, item => item.IsSkillCommand && item.Name.StartsWith("skill:", StringComparison.Ordinal));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public void SkillCommands_SkipNonUserInvocableSkills()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "aitools-skillhidden-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "hidden-plugin", ".claude-plugin"));
+        Directory.CreateDirectory(Path.Combine(root, "hidden-plugin", "skills", "secret"));
+        File.WriteAllText(
+            Path.Combine(root, "hidden-plugin", ".claude-plugin", "plugin.json"),
+            """{"name":"hidden-plugin"}""");
+        File.WriteAllText(
+            Path.Combine(root, "hidden-plugin", "skills", "secret", "SKILL.md"),
+            "---\ndescription: Model-only skill.\nuser-invocable: false\n---\nSecret instructions.");
+
+        try
+        {
+            var plugins = PluginCatalog.LoadFromDirectory(root);
+            var catalog = CommandCatalog.Create(null, plugins);
+
+            // 模型仍可 load_skill，但用户拿不到可执行的斜杠命令。
+            Assert.Single(plugins.Skills);
+            Assert.DoesNotContain(catalog.Commands, item => item.IsSkillCommand);
+            Assert.False(catalog.TryResolve("skill:secret", out _));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Pipeline_UnknownCommand_ReturnsNull()    {
         var pipeline = new ExtensionPipeline(new ExtensionPipelineOptions
         {
             Extensions = Array.Empty<IExtension>(),
