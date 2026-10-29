@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using AiTools.Core.Sessions;
 using AiTools.Wpf.Configuration;
 
@@ -12,7 +11,7 @@ namespace AiTools.Wpf;
 /// </summary>
 public sealed class AiToolsWpfOptions
 {
-    /// <summary>设置存储。默认为 <c>%LOCALAPPDATA%\AiTools</c> 下的 <see cref="JsonFileSettingsStore"/>。</summary>
+    /// <summary>设置存储。默认为 <c>~/.ai-tools</c> 下的 <see cref="JsonFileSettingsStore"/>。</summary>
     public ISettingsStore? SettingsStore { get; set; }
 
     /// <summary>服务商工厂。默认为 <see cref="BuiltInProviderFactory"/>。</summary>
@@ -47,7 +46,7 @@ public sealed class AiToolsWpfOptions
 
     /// <summary>
     /// 对话页的恢复/分叉功能所使用的会话存储。默认为
-    /// <c>%LOCALAPPDATA%\AiTools\conversations</c> 下的 <see cref="JsonConversationStore"/>。
+    /// <c>~/.ai-tools/conversations</c> 下的 <see cref="JsonConversationStore"/>。
     /// 如需临时会话，请设置为 <see cref="InMemoryConversationStore"/>。
     /// </summary>
     public IConversationStore? ConversationStore { get; set; }
@@ -79,6 +78,8 @@ public sealed class AiToolsWpfOptions
     /// 共享目录遵循 Pi / Codex 的约定：<c>skills/&lt;name&gt;/SKILL.md</c> 是技能，
     /// 根部的 <c>AGENTS.md</c> 是 agent 指令。项目级定义覆盖同名用户级定义。
     /// 用户级技能与 <c>AGENTS.md</c> 会被合并进 <see cref="DefaultSystemPrompt"/> 之前注入的清单。
+    /// 此外还会读取 AiTools 专属的 <c>~/.ai-tools/skills</c> 与 <c>~/.ai-tools/AGENTS.md</c>，
+    /// 它们比 <c>~/.agents</c> 更具体，同名时优先。
     /// </remarks>
     public bool EnableSharedAgents { get; set; } = true;
 
@@ -128,9 +129,7 @@ public sealed class AiToolsWpfOptions
         SettingsStore ??= new JsonFileSettingsStore(SecretProtector);
         ProviderFactory ??= new BuiltInProviderFactory();
         Providers ??= ProviderDescriptor.BuiltIns;
-        ConversationStore ??= new JsonConversationStore(Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "AiTools"));
+        ConversationStore ??= new JsonConversationStore(AiTools.Core.AiToolsPaths.GetConversationsRoot());
 
         if (MaxToolRounds < 0)
         {

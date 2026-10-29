@@ -79,6 +79,7 @@ public sealed class SharedAgentsCatalog
 /// <remarks>
 /// 约定来自 Pi 的共享资源布局，也是 Codex 与 Pi 都能读到的位置：
 /// <list type="bullet">
+/// <item><c>~/.ai-tools/skills/&lt;name&gt;/SKILL.md</c>：AiTools 专属的用户级 skill（优先级最高）</item>
 /// <item><c>~/.agents/skills/&lt;name&gt;/SKILL.md</c>：用户级共享 skill</item>
 /// <item><c>&lt;project&gt;/.agents/skills/&lt;name&gt;/SKILL.md</c>：项目级共享 skill</item>
 /// <item><c>~/.agents/skills/*/agents/*.yaml</c>：skill 附带的子代理定义（本库只报告，不执行）</item>
@@ -86,6 +87,7 @@ public sealed class SharedAgentsCatalog
 /// </list>
 /// 项目级定义总是覆盖同名用户级定义——这是 Pi 的 <c>.pi/agents/</c> 与 <c>.agents/</c>
 /// 冲突时的既有规则，沿用它可以避免不同工具读到不同的技能。
+/// AiTools 专属目录排在共享目录之后，因此同名时专属定义胜出（越具体越优先）。
 /// </remarks>
 public static class SharedAgents
 {
@@ -124,10 +126,21 @@ public static class SharedAgents
     /// 是否包含用户级资源。设为 false 可避免测试或受限宿主读取开发者主目录。
     /// </param>
     /// <param name="userDirectory">覆盖用户级共享目录；为 null 时使用 <see cref="GetUserDirectory"/>。</param>
+    /// <param name="includeNativeSkills">
+    /// 是否包含 AiTools 专属的 <c>~/.ai-tools/skills</c>（以及同一根下的 <c>AGENTS.md</c>）。
+    /// 该目录比共享 <c>.agents</c> 更具体，同名时优先。默认 true。
+    /// </param>
+    /// <param name="nativeDirectory">
+    /// 覆盖 AiTools 专属目录；为 null 时使用 <c>~/.ai-tools</c>。
+    /// 注意：显式指定 <paramref name="userDirectory"/> 而不同时指定本参数时，
+    /// 视为调用方要求一个沙盒视图，专属目录会被跳过，避免读到开发者真实主目录。
+    /// </param>
     public static SharedAgentsCatalog Discover(
         string? projectDirectory = null,
         bool includeUser = true,
-        string? userDirectory = null)
+        string? userDirectory = null,
+        bool includeNativeSkills = true,
+        string? nativeDirectory = null)
     {
         var diagnostics = new List<SkillDiagnostic>();
         var skillRoots = new List<string>();
@@ -147,6 +160,28 @@ public static class SharedAgents
             if (File.Exists(userInstructions))
             {
                 instructions.Add(ReadInstructions(userInstructions, AgentInstructionsScope.User, diagnostics));
+            }
+
+            // AiTools 专属目录排在共享 .agents 之后：越具体越优先。
+            if (includeNativeSkills)
+            {
+                var nativeRoot = nativeDirectory
+                    ?? (userDirectory == null ? AiTools.Core.AiToolsPaths.GetRootDirectory() : null);
+
+                if (nativeRoot != null)
+                {
+                    var nativeSkills = Path.Combine(nativeRoot, SkillsDirectoryName);
+                    if (Directory.Exists(nativeSkills))
+                    {
+                        skillRoots.Add(nativeSkills);
+                    }
+
+                    var nativeInstructions = Path.Combine(nativeRoot, InstructionsFileName);
+                    if (File.Exists(nativeInstructions))
+                    {
+                        instructions.Add(ReadInstructions(nativeInstructions, AgentInstructionsScope.User, diagnostics));
+                    }
+                }
             }
         }
 

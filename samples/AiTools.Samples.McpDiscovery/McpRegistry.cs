@@ -10,7 +10,7 @@ namespace AiTools.Samples.McpDiscovery;
 /// <summary>
 /// 本机运行的 MCP 服务的文件注册表。
 /// 除非 <c>AITOOLS_MCP_REGISTRY_PATH</c> 环境变量覆盖位置，注册表位于
-/// <c>%LOCALAPPDATA%\AiTools.SimpleMcp\registry.json</c>。
+/// <c>~/.ai-tools/simple-mcp/registry.json</c>。
 /// 所有读取-修改-写入操作均持有独占文件锁，以支持多个服务并发注册。
 /// </summary>
 public static class McpRegistry
@@ -40,8 +40,9 @@ public static class McpRegistry
             }
 
             return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "AiTools.SimpleMcp",
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".ai-tools",
+                "simple-mcp",
                 "registry.json");
         }
     }

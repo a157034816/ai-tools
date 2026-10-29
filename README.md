@@ -27,7 +27,8 @@ Console.WriteLine(response.GetText());
 - **扩展包（Extension Packages）**：一个目录 + 根部 `extension.json` 就是一个可 `git init` 的扩展包，`kind` 支持 C#（宿主 `dotnet build` 到独立目录 + 可回收 `AssemblyLoadContext`）、JavaScript 与 TypeScript（Jint + 内置 strip-and-rewrite 转译，无需 `tsc`/Node）；`ExtensionWorkspace` 负责扫描、`require` 依赖排序、热重载与文件监视，`ExtensionSourceManager` 支持 `git clone` 安装；`/extension` 子命令管理与查看诊断。
 - **输出风格 / 权限 / 信任 / 工作流**：`output-styles` 改措辞（`/output-style` 切换）；`PermissionPolicy`（deny > ask > allow）+ `ProjectTrust` 在加载项目插件前判定；Jint 沙箱里的 `workflows/*.js` 成为斜杠命令。
 - **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json`、`output-styles/*.md`、`workflows/*.js` 全部生效，与扩展命令共用同一个 `/` 面板。
-- **共享 `.agents`**：读取 Pi / Codex 约定的 `~/.agents` 与 `<project>/.agents`——`skills/*/SKILL.md` 成为可加载技能与 `/skill:<名称>` 命令，`AGENTS.md` 按「用户级 → 项目级」注入系统提示；项目级同名技能覆盖用户级。
+- **用户级数据根**：所有运行时读写收敛在 `~/.ai-tools`（设置、会话、技能、扩展），与 Claude Code 的 `~/.claude`、Codex 的 `~/.codex` 同一套布局约定；`AiToolsPaths` 是唯一路径来源，`AITOOLS_HOME` 可覆盖根目录。
+- **共享 `.agents`**：读取 Pi / Codex 约定的 `~/.agents` 与 `<project>/.agents`——`skills/*/SKILL.md` 成为可加载技能与 `/skill:<名称>` 命令，`AGENTS.md` 按「用户级 → 项目级」注入系统提示；专属目录 `~/.ai-tools/skills` 与项目级同名技能优先。
 - **模型发现**：`IModelCatalog` 直接从服务商接口拉取可用模型（OpenAI 兼容 `/models`、Anthropic、Gemini，自动翻页），设置页可一键筛选并加入配置。
 - **生产级细节**：指数退避重试、`Retry-After` 支持、统一异常体系（认证/限流/参数/服务端）、SSE 与 NDJSON 双协议解析、可注入 `HttpClient`。
 - **双目标**：`netstandard2.0` + `net8.0`，既能用于 .NET Framework 4.6.1+ 的老项目，也能享受现代运行时的性能。
@@ -272,7 +273,7 @@ dotnet run --project samples/AiTools.Samples.McpAgentManager
 ```csharp
 AiToolsWpf.Initialize(new AiToolsWpfOptions
 {
-    ConversationStore = new JsonConversationStore(@"D:\my-app\data"), // 默认 %LOCALAPPDATA%\AiTools
+    ConversationStore = new JsonConversationStore(@"D:\my-app\data"), // 默认 ~/.ai-tools
     AutoSaveConversations = true
 });
 ```

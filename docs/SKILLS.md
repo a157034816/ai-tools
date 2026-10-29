@@ -120,7 +120,31 @@ var toolset = new SkillToolset(catalog, new SkillToolOptions
 });
 ```
 
-## 共享 `.agents` 目录（Pi / Codex 通用）
+## 用户级目录：`~/.ai-tools` 与共享 `.agents`
+
+AiTools 的所有运行时数据都收敛在 **`~/.ai-tools`** 下——与 Claude Code 的 `~/.claude`、
+Codex 的 `~/.codex` 是同一套布局约定。可用环境变量 `AITOOLS_HOME` 覆盖根目录（测试/便携部署）。
+
+```
+~/.ai-tools/                        # AiTools 数据根（AITOOLS_HOME 可覆盖）
+├── settings.json                   # 服务商、模型、密钥（DPAPI 保护）
+├── AGENTS.md                       # AiTools 专属 agent 指令
+├── skills/<name>/SKILL.md          # AiTools 专属技能
+├── conversations/                  # 会话记录
+└── extensions/                     # 插件与扩展数据
+```
+
+`AiTools.Core.AiToolsPaths` 是唯一的路径来源，不要在别处重新拼 `Environment.GetFolderPath`：
+
+```csharp
+AiToolsPaths.GetRootDirectory();          // ~/.ai-tools
+AiToolsPaths.GetSettingsFile();           // ~/.ai-tools/settings.json
+AiToolsPaths.GetConversationsRoot();      // 传给 JsonConversationStore
+AiToolsPaths.GetSkillsDirectory();        // ~/.ai-tools/skills
+AiToolsPaths.GetExtensionsDirectory();    // ~/.ai-tools/extensions
+```
+
+### 跨工具共享：`.agents`
 
 多个 agent 工具约定用 `.agents` 作为**与工具无关**的共享资源根。本库直接读取这个位置，
 因此 Pi 或 Codex 里已经装好的技能，在 AiTools 里不需要复制粘贴：
@@ -143,16 +167,19 @@ var toolset = new SkillToolset(catalog, new SkillToolOptions
 var shared = SharedAgents.Discover(projectDirectory: @"D:\Code\my-repo");
 
 shared.Skills.Skills;          // 合并后的技能（项目级覆盖同名用户级）
-shared.BuildInstructionsPrompt(); // 两处 AGENTS.md 拼成的一段系统提示
+shared.BuildInstructionsPrompt(); // 各处 AGENTS.md 拼成的一段系统提示
 shared.Diagnostics;            // 被覆盖的重复技能等
 ```
 
 规则：
 
-- **项目级覆盖用户级**：同名技能以项目定义为准，被覆盖的那个记入 `Diagnostics`。
+- **优先级从低到高**：`~/.agents` → `~/.ai-tools` → `<project>/.agents`。同名时靠后者胜出，
+  被覆盖的那个记入 `Diagnostics`。AiTools 专属目录比共享目录更具体，因此排在共享目录之后。
 - **`AGENTS.md` 按作用域拼接**：用户级在前、项目级在后，越靠后越具体。
 - **`SKILL.md` 必须有 `name` 与 `description`**：与单目录加载一致，缺失即跳过并记诊断。
 - **`agents/*.yaml` 不执行**：只通过 `SharedAgents.FindAgentDefinitions` 报告，是否使用由宿主决定。
+- **沙盒语义**：显式传入 `userDirectory` 而不传 `nativeDirectory` 时，`~/.ai-tools` 会被跳过，
+  避免测试读到开发者真实主目录。
 
 WPF 宿主默认启用（`EnableSharedAgents = true`）：共享技能既进入 `load_skill` 的知识清单，
 也以 `/skill:<名称>` 出现在命令面板——执行时把技能指令作为提示词。插件提供同名技能时以插件为准。

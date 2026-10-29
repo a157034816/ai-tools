@@ -60,7 +60,7 @@ using AiTools.Extensions.Packages;
 await using var workspace = new ExtensionWorkspace(new ExtensionWorkspaceOptions
 {
     Directories = new[] { "samples/extensions" },   // 扫描每个直接子目录里的 extension.json
-    DataDirectory = null,                            // 省略时用 LocalApplicationData/AiTools/extensions/data
+    DataDirectory = null,                            // 省略时用 ~/.ai-tools/extensions/data
     BuildOnLoad = true,                              // C# 包在加载时构建；脚本包装译在 PrepareAsync 里
     EnableDotnetBuild = true,
     Watch = false,                                   // true 时监听文件变化并自动重载

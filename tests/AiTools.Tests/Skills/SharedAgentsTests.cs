@@ -177,6 +177,46 @@ public sealed class SharedAgentsTests : IDisposable
     }
 
     [Fact]
+    public void Discover_NativeSkillsDirectoryWinsOverSharedAgents()
+    {
+        WriteSkill(_userAgents, "review", "Shared version.", "shared body");
+
+        var nativeRoot = Path.Combine(_root, "home", ".ai-tools");
+        var nativeSkill = Path.Combine(nativeRoot, "skills", "review");
+        Directory.CreateDirectory(nativeSkill);
+        File.WriteAllText(
+            Path.Combine(nativeSkill, "SKILL.md"),
+            "---\nname: review\ndescription: Native version.\n---\n\nnative body");
+        File.WriteAllText(Path.Combine(nativeRoot, "AGENTS.md"), "Native instructions.");
+
+        var catalog = SharedAgents.Discover(
+            _project,
+            includeUser: true,
+            userDirectory: _userAgents,
+            nativeDirectory: nativeRoot);
+
+        var skill = catalog.Skills.Skills.Single(item => item.Name == "review");
+        Assert.Equal("Native version.", skill.Description);
+        Assert.Contains("native body", skill.Instructions);
+        Assert.Contains(catalog.Diagnostics, item => item.Message.Contains("overridden"));
+        Assert.Contains(catalog.Instructions, item => item.Content.Contains("Native instructions."));
+    }
+
+    [Fact]
+    public void Discover_SandboxedUserDirectory_SkipsNativeRoot()
+    {
+        // 调用方显式给定 userDirectory 且未给 nativeDirectory 时，不能偷偷读开发者真实主目录。
+        WriteSkill(_userAgents, "only-shared", "Shared only.");
+
+        var catalog = SharedAgents.Discover(_project, includeUser: true, userDirectory: _userAgents);
+
+        Assert.Equal(new[] { "only-shared" }, catalog.Skills.Skills.Select(skill => skill.Name));
+        Assert.DoesNotContain(
+            catalog.SkillRoots,
+            root => root.Contains(".ai-tools", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void LoadFromDirectories_LaterRootsWin()
     {
         var low = Path.Combine(_root, "low");

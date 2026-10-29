@@ -64,6 +64,7 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 | `Sse/SseParser.cs` | 通用 SSE 解析（多行 data、注释、`[DONE]`、`event:`）与 NDJSON 解析 |
 | `Json/JsonHelpers.cs` | 容错读取 JSON 字段的静态辅助方法 |
 | `Chat/ChatStreamAccumulator.cs` | 将流式增量聚合为完整 `ChatResponse` |
+| `AiToolsPaths.cs` | 用户级数据根 `~/.ai-tools`：设置、会话、技能、扩展的唯一路径来源 |
 
 ### Provider 约定
 

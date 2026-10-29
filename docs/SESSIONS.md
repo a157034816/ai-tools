@@ -13,7 +13,7 @@
 using AiTools.Core.Sessions;
 
 // 默认实现：每个会话一个 JSON 文件，原子写入
-IConversationStore store = new JsonConversationStore(@"%LOCALAPPDATA%\AiTools");
+IConversationStore store = new JsonConversationStore(AiToolsPaths.GetConversationsRoot());
 
 // 内存实现（测试 / 临时会话）
 IConversationStore ephemeral = new InMemoryConversationStore();
@@ -52,7 +52,7 @@ public sealed class ConversationRecord
 ```csharp
 AiToolsWpf.Initialize(new AiToolsWpfOptions
 {
-    // 默认已使用 %LOCALAPPDATA%\AiTools\conversations；
+    // 默认已使用 ~/.ai-tools/conversations；
     // 这里演示自定义目录与关闭自动保存。
     ConversationStore = new JsonConversationStore(@"D:\my-app\data"),
     AutoSaveConversations = true
@@ -61,7 +61,7 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
-| `ConversationStore` | `JsonConversationStore`（`%LOCALAPPDATA%\AiTools`） | 会话存储实现 |
+| `ConversationStore` | `JsonConversationStore`（`~/.ai-tools`） | 会话存储实现 |
 | `AutoSaveConversations` | `true` | 每轮对话完成后自动保存当前会话 |
 
 ### 对话页行为

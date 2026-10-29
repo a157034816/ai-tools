@@ -15,7 +15,7 @@ protected override void OnStartup(StartupEventArgs e)
         EnableTools = true,
         MaxToolRounds = 4,
 
-        // 可选：自定义设置存储（默认 %LOCALAPPDATA%\AiTools\settings.json）
+        // 可选：自定义设置存储（默认 ~/.ai-tools/settings.json）
         SettingsStore = new JsonFileSettingsStore(@"D:\my-app\settings.json", new DpapiSecretProtector()),
 
         // 可选：自定义 Provider 工厂（密钥轮换、代理、日志等）

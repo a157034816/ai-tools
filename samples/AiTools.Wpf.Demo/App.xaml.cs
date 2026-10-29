@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Windows;
 using AiTools.Abstractions;
+using AiTools.Core;
 using AiTools.Core.Sessions;
 using AiTools.Skills;
 using AiTools.Wpf;
@@ -21,11 +22,10 @@ public partial class App : Application
         var skillToolset = new SkillToolset(skillCatalog);
         var basePrompt = "你是简洁、准确的中文技术助手。回答尽量控制在 5 句话以内。";
 
-        // 2) 全局配置：设置存储位置（演示用，放在用户目录下）、技能目录、自定义工具、回调。
-        var settingsPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "AiTools.Wpf.Demo",
-            "settings.json");
+        // 2) 全局配置：设置存储位置、技能目录、自定义工具、回调。
+        // 演示用独立子目录（~/.ai-tools/wpf-demo），避免与真实应用的设置互相覆盖。
+        var demoRoot = Path.Combine(AiToolsPaths.GetRootDirectory(), "wpf-demo");
+        var settingsPath = Path.Combine(demoRoot, "settings.json");
 
         AiToolsWpf.Initialize(new AiToolsWpfOptions
         {
@@ -33,8 +33,7 @@ public partial class App : Application
             SettingsStore = new JsonFileSettingsStore(settingsPath, new DpapiSecretProtector()),
 
             // 演示：会话历史也放到独立目录，/resume 与 /fork 使用。
-            ConversationStore = new JsonConversationStore(
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AiTools.Wpf.Demo")),
+            ConversationStore = new JsonConversationStore(demoRoot),
             AutoSaveConversations = true,
 
             // /ask、/goal 与 /plan 由内置扩展（AskExtension / GoalExtension / PlanExtension）提供；

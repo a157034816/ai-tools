@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace AiTools.Wpf.Configuration;
 
 /// <summary>
-/// 默认设置存储，将 JSON 写入 <c>%LOCALAPPDATA%\AiTools\settings.json</c>（或指定的路径），
+/// 默认设置存储，将 JSON 写入 <c>~/.ai-tools/settings.json</c>（或指定的路径），
 /// 并使用 <see cref="ISecretProtector"/> 保护 API Key。
 /// </summary>
 public sealed class JsonFileSettingsStore : ISettingsStore
@@ -24,12 +24,9 @@ public sealed class JsonFileSettingsStore : ISettingsStore
     private readonly ISecretProtector _protector;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    /// <summary>在默认位置创建存储。</summary>
+    /// <summary>在默认位置（<c>~/.ai-tools/settings.json</c>）创建存储。</summary>
     public JsonFileSettingsStore(ISecretProtector protector)
-        : this(Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "AiTools",
-            "settings.json"), protector)
+        : this(AiTools.Core.AiToolsPaths.GetSettingsFile(), protector)
     {
     }
 

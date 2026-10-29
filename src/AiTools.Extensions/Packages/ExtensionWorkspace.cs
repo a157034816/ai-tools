@@ -502,9 +502,14 @@ public sealed class ExtensionWorkspace : IDisposable, IAsyncDisposable
 /// <summary>解析默认扩展工作区根目录。</summary>
 public static class ExtensionWorkspacePaths
 {
-    /// <summary>按环境变量、项目本地目录和用户本地目录的优先级解析根目录，并追加存在的仓库本地扩展目录。</summary>
+    /// <summary>
+    /// 按环境变量、项目本地目录和用户数据目录的优先级解析根目录，并追加存在的仓库本地扩展目录。
+    /// </summary>
     /// <param name="workingDirectory">当前工作目录；null 时使用进程当前目录。</param>
     /// <returns>存在的唯一根目录。</returns>
+    /// <remarks>
+    /// 用户数据目录是 <c>~/.ai-tools/extensions</c>（可用 <c>AITOOLS_HOME</c> 覆盖根目录）。
+    /// </remarks>
     public static IReadOnlyList<string> ResolveDefaultRoots(string? workingDirectory = null)
     {
         var roots = new List<string>();
@@ -518,7 +523,7 @@ public static class ExtensionWorkspacePaths
         {
             var local = Path.Combine(cwd, ".ai-tools", "extensions");
             if (Directory.Exists(local)) AddIfExists(roots, local);
-            else AddIfExists(roots, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AiTools", "extensions"));
+            else AddIfExists(roots, AiTools.Core.AiToolsPaths.GetExtensionsDirectory());
         }
         var repositoryRoot = FindRepositoryRoot(cwd);
         if (repositoryRoot != null) AddIfExists(roots, Path.Combine(repositoryRoot, ".ai-tools", "extensions"));

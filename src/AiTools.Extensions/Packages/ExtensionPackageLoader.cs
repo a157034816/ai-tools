@@ -177,7 +177,7 @@ public sealed class ExtensionPackageLoader
     private static IExtensionFactoryContext CreateContext(ExtensionPackageManifest manifest, ExtensionPackageLoaderOptions options, ExtensionPackage package)
     {
         var parent = string.IsNullOrWhiteSpace(options.DataDirectory)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AiTools", "extensions", "data")
+            ? AiTools.Core.AiToolsPaths.GetExtensionDataDirectory()
             : options.DataDirectory!;
         var dataPath = Path.Combine(parent, manifest.Name);
         Directory.CreateDirectory(dataPath);

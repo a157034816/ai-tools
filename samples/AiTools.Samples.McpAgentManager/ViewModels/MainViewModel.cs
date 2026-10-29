@@ -1119,8 +1119,9 @@ internal static class AppPaths
         }
 
         return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "AiTools.McpAgentManager");
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ai-tools",
+            "mcp-agent-manager");
     }
 
     /// <summary>

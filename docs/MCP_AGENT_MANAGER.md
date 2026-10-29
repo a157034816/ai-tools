@@ -18,7 +18,7 @@
 | Hermes | `%LOCALAPPDATA%\hermes\config.yaml` → `mcp_servers` | YAML | ✅ |
 | dsh | — | 不支持写入，仅导出 JSON | — |
 
-> 配置位置以作者本机实测为准（Claude Code 2.1、Codex、Grok、Gemini、Pi 18.12、OMP、Hermes）。各 agent 版本迭代可能调整路径，程序内提供「配置路径…」手动覆盖，覆盖项保存在 `%LOCALAPPDATA%\AiTools.McpAgentManager\overrides.json`。
+> 配置位置以作者本机实测为准（Claude Code 2.1、Codex、Grok、Gemini、Pi 18.12、OMP、Hermes）。各 agent 版本迭代可能调整路径，程序内提供「配置路径…」手动覆盖，覆盖项保存在 `~/.ai-tools/mcp-agent-manager/overrides.json`。
 
 ## 预置 MCP 服务
 
