@@ -34,7 +34,9 @@ public sealed class ExtensionRuntime
     private readonly Dictionary<string, List<Func<Task>>> _mcpCleanupByOwner = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _activeTools = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<NamespaceRegistration> _namespaces = new();
+    private readonly List<SkillRegistration> _skills = new();
     private readonly List<LoadoutPreparerRegistration> _loadoutPreparers = new();
+    private int _skillsVersion;
     private readonly ExtensionTool _toolSearchTool;
     private readonly ExtensionTool _codemodeTool;
     [ThreadStatic]
@@ -177,6 +179,29 @@ public sealed class ExtensionRuntime
             }
         }
     }
+
+    /// <summary>获取扩展登记的 skill，按名称排序；同名后注册者覆盖先注册者。</summary>
+    public IReadOnlyList<ExtensionSkill> Skills
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _skills
+                    .GroupBy(item => item.Skill.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(group =>
+                    {
+                        var winner = group.Last();
+                        return new ExtensionSkill { ExtensionName = winner.Owner, Definition = winner.Skill };
+                    })
+                    .OrderBy(item => item.Name, StringComparer.Ordinal)
+                    .ToArray();
+            }
+        }
+    }
+
+    /// <summary>获取技能表的变更版本号；每次新增、替换或卸载技能自增。宿主据此决定是否重建技能目录。</summary>
+    public int SkillsVersion => Volatile.Read(ref _skillsVersion);
 
     /// <summary>
     /// 构建本轮的装载结果：激活集合 → 声明/可调用/全部，然后按注册顺序链式应用装载准备器。
@@ -545,6 +570,147 @@ public sealed class ExtensionRuntime
         AddTool(tool);
     }
 
+    /// <summary>
+    /// 由宿主登记一个技能（例如扩展包随包携带的 <c>SKILL.md</c>）。
+    /// 与扩展技能共用同一张表；同名后登记者胜出。
+    /// </summary>
+    /// <param name="skill">技能定义。</param>
+    /// <param name="ownerName">归属名，伴随 <see cref="UnregisterSkills"/> 或扩展卸载一起回滚。</param>
+    public void RegisterSkill(AiTools.Skills.SkillDefinition skill, string ownerName)
+        => RegisterSkill(skill, ownerName, isPackage: false);
+
+    /// <summary>
+    /// 用当前包技能整体替换此前的包技能（同名技能与其它来源的同名项）：先移除全部包技能，
+    /// 再登记 <paramref name="skills"/>。工作区扫描、单个包重载或热重载后调用。
+    /// 内容与当前包技能完全一致时不改动注册表，也不递增 <see cref="SkillsVersion"/>。
+    /// </summary>
+    /// <param name="skills">当前所有被工作区接受的包携带的技能。</param>
+    /// <returns>技能表是否发生变化。</returns>
+    public bool ReplacePackageSkills(IEnumerable<(string PackageName, AiTools.Skills.SkillDefinition Skill)> skills)
+    {
+        if (skills == null)
+        {
+            throw new ArgumentNullException(nameof(skills));
+        }
+
+        var incoming = skills
+            .Where(item => item.Skill != null && !string.IsNullOrWhiteSpace(item.Skill.Name))
+            .ToArray();
+
+        var removedAny = false;
+        lock (_gate)
+        {
+            var existing = _skills.Where(item => item.IsPackage).ToArray();
+            if (existing.Length == incoming.Length && SamePackageSkills(existing, incoming))
+            {
+                return false;
+            }
+
+            removedAny = _skills.RemoveAll(item => item.IsPackage) > 0;
+        }
+
+        foreach (var item in incoming)
+        {
+            RegisterSkill(item.Skill, item.PackageName, isPackage: true);
+        }
+
+        // 没有新技能但移除了旧包技能时，技能表同样发生了变化。
+        if (incoming.Length == 0 && removedAny)
+        {
+            Interlocked.Increment(ref _skillsVersion);
+        }
+
+        return true;
+    }
+
+    /// <summary>比较已登记的包技能与即将登记的集合是否等价（名称、归属与内容）。</summary>
+    private static bool SamePackageSkills(
+        IReadOnlyList<SkillRegistration> existing,
+        IReadOnlyList<(string PackageName, AiTools.Skills.SkillDefinition Skill)> incoming)
+    {
+        var byName = existing.ToDictionary(
+            item => item.Skill.Name,
+            item => item,
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in incoming)
+        {
+            if (!byName.TryGetValue(item.Skill.Name, out var current))
+            {
+                return false;
+            }
+
+            if (!string.Equals(current.Owner, item.PackageName, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(current.Skill.Description, item.Skill.Description, StringComparison.Ordinal) ||
+                !string.Equals(current.Skill.Instructions, item.Skill.Instructions, StringComparison.Ordinal) ||
+                !string.Equals(current.Skill.DirectoryPath, item.Skill.DirectoryPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void RegisterSkill(AiTools.Skills.SkillDefinition skill, string ownerName, bool isPackage)
+    {
+        if (skill == null)
+        {
+            throw new ArgumentNullException(nameof(skill));
+        }
+
+        if (string.IsNullOrWhiteSpace(skill.Name))
+        {
+            throw new ArgumentException("A skill name is required.", nameof(skill));
+        }
+
+        if (string.IsNullOrWhiteSpace(skill.Description))
+        {
+            throw new ArgumentException("A skill description is required.", nameof(skill));
+        }
+
+        var registration = new SkillRegistration(
+            string.IsNullOrWhiteSpace(ownerName) ? skill.Name : ownerName,
+            skill,
+            isPackage);
+        lock (_gate)
+        {
+            // 同名技能后注册者覆盖先注册者（跨来源亦然），与工具、命令的覆盖规则一致。
+            _skills.RemoveAll(item => string.Equals(item.Skill.Name, skill.Name, StringComparison.OrdinalIgnoreCase));
+            _skills.Add(registration);
+        }
+
+        // 新增与替换都会改变技能内容，宿主据此重建目录。
+        Interlocked.Increment(ref _skillsVersion);
+    }
+
+    /// <summary>移除某个归属登记的非包技能（包技能由 <see cref="ReplacePackageSkills"/> 统一替换）。</summary>
+    /// <param name="ownerName">归属名。</param>
+    /// <returns>是否移除了至少一个技能。</returns>
+    public bool UnregisterSkills(string ownerName)
+    {
+        if (string.IsNullOrWhiteSpace(ownerName))
+        {
+            return false;
+        }
+
+        int removed;
+        lock (_gate)
+        {
+            removed = _skills.RemoveAll(item =>
+                !item.IsPackage &&
+                string.Equals(item.Owner, ownerName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (removed == 0)
+        {
+            return false;
+        }
+
+        Interlocked.Increment(ref _skillsVersion);
+        return true;
+    }
+
     /// <summary>清空所有注册（扩展、命令、工具、事件、provider、虚拟模型、MCP、激活集合、命名空间、装载准备器）。用于热重载。</summary>
     public void Reset()
     {
@@ -563,8 +729,10 @@ public sealed class ExtensionRuntime
             _activationState.Clear();
             _activeTools.Clear();
             _namespaces.Clear();
+            _skills.Clear();
             _loadoutPreparers.Clear();
         }
+        Interlocked.Increment(ref _skillsVersion);
         CodemodeTool.Register(this, new ExtensionApi(this, RuntimeOwner));
     }
 
@@ -951,6 +1119,7 @@ public sealed class ExtensionRuntime
     private void Rollback(string ownerName)
     {
         Func<Task>[] cleanup;
+        var removedSkills = false;
         lock (_gate)
         {
             var removedTools = _tools
@@ -972,6 +1141,13 @@ public sealed class ExtensionRuntime
             _mcpServers.RemoveAll(item => string.Equals(item.PluginName, ownerName, StringComparison.OrdinalIgnoreCase));
             _namespaces.RemoveAll(item => string.Equals(item.Owner, ownerName, StringComparison.OrdinalIgnoreCase));
             _loadoutPreparers.RemoveAll(item => string.Equals(item.Owner, ownerName, StringComparison.OrdinalIgnoreCase));
+            // 包技能由工作区整体替换，不随单个扩展卸载回滚（即便扩展名与包名相同）。
+            if (_skills.RemoveAll(item =>
+                    !item.IsPackage &&
+                    string.Equals(item.Owner, ownerName, StringComparison.OrdinalIgnoreCase)) > 0)
+            {
+                removedSkills = true;
+            }
             _activationState.Remove(ownerName);
             if (_toolRenderersByOwner.TryGetValue(ownerName, out var renderers))
             {
@@ -983,6 +1159,11 @@ public sealed class ExtensionRuntime
             }
             cleanup = _mcpCleanupByOwner.TryGetValue(ownerName, out var actions) ? actions.ToArray() : Array.Empty<Func<Task>>();
             _mcpCleanupByOwner.Remove(ownerName);
+        }
+
+        if (removedSkills)
+        {
+            Interlocked.Increment(ref _skillsVersion);
         }
 
         for (var index = cleanup.Length - 1; index >= 0; index--)
@@ -1223,6 +1404,16 @@ public sealed class ExtensionRuntime
                     ToolNames.Canonicalize(item.Value.Name) == canonical);
                 _runtime._namespaces.Add(new NamespaceRegistration(Name, @namespace));
             }
+        }
+
+        public void RegisterSkill(AiTools.Skills.SkillDefinition skill)
+        {
+            if (skill == null)
+            {
+                throw new ArgumentNullException(nameof(skill));
+            }
+
+            _runtime.RegisterSkill(skill, Name);
         }
 
         public void RegisterLoadoutPreparer(Func<ToolLoadout, ToolLoadout> preparer)

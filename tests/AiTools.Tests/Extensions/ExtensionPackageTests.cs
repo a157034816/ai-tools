@@ -165,14 +165,41 @@ public sealed class ExtensionPackageTests
         Assert.True(samplePackage.IsLoaded, string.Join(Environment.NewLine, samplePackage.Diagnostics.Select(item => item.ToString())));
         Assert.Empty(samplePackage.Diagnostics);
         Assert.Contains(samplePackage.Extensions, extension => extension.Name == "hello-csharp");
+
+        // 示例包同时携带随包技能，且能通过管道进入运行时。
+        Assert.Equal(new[] { "counter-etiquette" }, samplePackage.Skills.Select(skill => skill.Name));
+        await using (var samplePipeline = new ExtensionPipeline(new ExtensionPipelineOptions
+        {
+            Extensions = samplePackage.GetExtensionsWithSkills(),
+            WorkingDirectory = temp.Path,
+            EnableWorkflows = false
+        }))
+        {
+            Assert.Contains(samplePipeline.Skills, skill => skill.Name == "counter-etiquette");
+            Assert.Contains(samplePipeline.Skills, skill => skill.Name == "hello-csharp-session");
+            Assert.Contains(samplePipeline.Commands.Commands, command => command.Name == "skill:counter-etiquette");
+        }
+
         samplePackage.Unload();
     }
 
     private static void CopyPackageDirectory(string source, string destination)
     {
         Directory.CreateDirectory(destination);
-        foreach (var file in Directory.GetFiles(source, "*", SearchOption.TopDirectoryOnly))
-            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+        foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        {
+            // 跳过示例目录里的构建产物与宿主生成目录。
+            var relative = Path.GetRelativePath(source, file);
+            if (relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Any(part => part is "bin" or "obj" or ".ai-tools"))
+            {
+                continue;
+            }
+
+            var target = Path.Combine(destination, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target);
+        }
     }
 
     private static void CopyFixture(string destination)

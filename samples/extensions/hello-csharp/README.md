@@ -10,6 +10,9 @@ hello-csharp/
 ├── extension.json      包清单（kind = csharp，project 指向 csproj）
 ├── HelloCSharp.csproj  net8.0，引用 ../../.. 的 AiTools.Extensions
 ├── HelloExtension.cs   实现 IExtension 的扩展本体
+├── skills/
+│   └── counter-etiquette/
+│       └── SKILL.md    随包技能（静态登记）
 └── README.md
 ```
 
@@ -21,6 +24,8 @@ hello-csharp/
 | 命令 | 无参数执行 `/hello` | 返回 `CommandResult.Display`，只显示当前计数，不发起模型轮次 |
 | 工具 | 模型调用 `hello_csharp_count` | 参数 `{ "increment": true }` 先自增再返回；否则只读。返回 `{ count, sessionId }` |
 | 事件 | `BeforeAgentStart` | 计数大于 0 时追加 `## Hello C#` 段落，把进度回灌进系统提示 |
+| 技能 | `skills/counter-etiquette/SKILL.md` | 随包提供；模型经 `load_skill` 加载，用户可用 `/skill:counter-etiquette` 直接调用 |
+| 技能 | `api.RegisterSkill(...)` | 运行时登记的 `hello-csharp-session`，演示代码也能携带任意数量的技能 |
 
 状态写在 `context.State`（`ExtensionStateStore`）里，以扩展名 `hello-csharp` 分桶，随会话持久化，
 **不占用对话历史**——这是 Pi 式扩展的关键点：命令建立状态、工具推进状态、事件把状态送回提示词。

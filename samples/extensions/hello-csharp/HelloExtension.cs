@@ -56,6 +56,26 @@ public sealed class HelloExtension : IExtension
             ToolExposure.Direct);
 
         api.On<BeforeAgentStartEvent>(ExtensionEvent.BeforeAgentStart, AppendCounterSectionAsync);
+
+        // 技能也可以由代码动态登记；随包 skills/greeting-style/SKILL.md 是静态登记的同名示例。
+        // 这里再登记一个只在运行时生成的技能，演示「扩展能带任意数量的技能」。
+        api.RegisterSkill(new AiTools.Skills.SkillDefinition
+        {
+            Name = "hello-csharp-session",
+            Description = "描述 hello-csharp 本次会话的问候进度，并说明如何按进度调整语气。当用户询问问候计数或希望延续同一会话的风格时加载。",
+            Instructions =
+                "# Hello C# 会话进度\n\n" +
+                "本技能由 `HelloExtension.Activate` 动态登记，内容每次随扩展加载生成。\n\n" +
+                "1. 需要读取精确计数时调用 `hello_csharp_count`（不要自增）。\n" +
+                "2. 计数为 0 时按首次问候处理；大于 0 时在问候中提及这是第几次。\n",
+            DirectoryPath = AppContext.BaseDirectory,
+            SkillFilePath = Path.Combine(AppContext.BaseDirectory, "SKILL.md"),
+            Metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["author"] = "AiTools Contributors",
+                ["origin"] = "register-skill"
+            }
+        });
     }
 
     private static Task<CommandResult> HandleHelloAsync(

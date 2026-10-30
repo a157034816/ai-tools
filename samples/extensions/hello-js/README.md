@@ -12,6 +12,10 @@ hello-js/
 ├── index.js         入口模块，导出 { name, description, activate(api) }
 ├── lib/
 │   └── greet.js     包内第二个模块，被 index.js 以 require('./lib/greet') 引入
+├── skills/
+│   └── greeting-style/
+│       ├── SKILL.md            随包技能（静态登记）
+│       └── references/tone.md  随包资源，模型可经 read_skill_file 读取
 └── README.md
 ```
 
@@ -23,6 +27,8 @@ hello-js/
 | 命令 | 无参数执行 `/hello-js` | 返回 `{ display: … }`，只显示、不调用模型 |
 | 工具 | 模型调用 `hello_js_count` | 参数 `{ "increment": true }` 先自增再返回；否则只读。返回对象会 JSON 序列化 |
 | 事件 | `before_agent_start` | 计数大于 0 时向 `event.promptSections` push `## Hello JS` 段落 |
+| 技能 | `skills/greeting-style/` | 随包提供；模型经 `load_skill` 加载，用户可用 `/skill:greeting-style` 调用 |
+| 技能 | `api.registerSkill({...})` | 运行时登记的 `hello-js-session`，演示代码也能携带任意数量的技能 |
 
 ## 入口模块形状
 

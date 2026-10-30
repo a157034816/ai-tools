@@ -23,6 +23,9 @@ public sealed class ExtensionPackage : IDisposable
     /// <summary>获取包清单。</summary>
     public ExtensionPackageManifest Manifest { get; }
 
+    /// <summary>获取包携带的技能，按名称排序；配置在 <c>skills/</c> 或清单 <c>skills</c> 声明的目录下。</summary>
+    public IReadOnlyList<AiTools.Skills.SkillDefinition> Skills { get; private set; } = Array.Empty<AiTools.Skills.SkillDefinition>();
+
     /// <summary>获取包诊断。</summary>
     public IList<PluginDiagnostic> Diagnostics { get; }
 
@@ -40,6 +43,7 @@ public sealed class ExtensionPackage : IDisposable
     {
         _isLoaded = false;
         _extensions = Array.Empty<IExtension>();
+        Skills = Array.Empty<AiTools.Skills.SkillDefinition>();
         var handle = _unloadHandle;
         _unloadHandle = null;
         handle?.Dispose();
@@ -47,6 +51,26 @@ public sealed class ExtensionPackage : IDisposable
 
     /// <summary>释放包资源。</summary>
     public void Dispose() => Unload();
+
+    /// <summary>
+    /// 获取把包扩展与随包技能绑在一起的扩展列表。
+    /// 宿主手动加载包时把它们传给 <see cref="ExtensionPipelineOptions.Extensions"/>，
+    /// 就能让包里的 <c>SKILL.md</c> 与代码一同生效（工作区路径不需要：它由 <see cref="ExtensionPipeline.RefreshPackagedSkills"/> 处理）。
+    /// </summary>
+    public IReadOnlyList<IExtension> GetExtensionsWithSkills()
+    {
+        if (Skills.Count == 0)
+        {
+            return Extensions;
+        }
+
+        return Extensions
+            .Select(extension => (IExtension)new PackageExtensionBinding(Manifest.Name, extension, Skills))
+            .ToArray();
+    }
+
+    internal void SetSkills(IEnumerable<AiTools.Skills.SkillDefinition> skills)
+        => Skills = skills.ToArray();
 
     internal void SetLoaded(IEnumerable<IExtension> extensions, IDisposable? unloadHandle)
     {

@@ -2,12 +2,12 @@
   "name": "hello-csharp",
   "displayName": "Hello C#",
   "version": "1.0.0",
-  "description": "最小 C# 扩展包：一条带会话计数的命令、一个工具，以及一段每轮注入的提示词段落。",
+  "description": "最小 C# 扩展包：一条带会话计数的命令、一个工具、一段每轮注入的提示词段落，以及随包技能与运行时登记的技能。",
   "kind": "csharp",
   "project": "HelloCSharp.csproj",
   "output": "bin/ext",
   "require": [],
-  "keywords": ["example", "csharp", "hello"],
+  "keywords": ["example", "csharp", "hello", "skill"],
   "metadata": {
     "author": "AiTools Contributors",
     "docs": "README.md"

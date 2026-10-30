@@ -202,3 +202,21 @@ internal sealed class LoadoutPreparerRegistration
 
     public Func<ToolLoadout, ToolLoadout> Prepare { get; }
 }
+
+/// <summary>技能注册项：记录归属扩展，便于卸载或激活失败时回滚。</summary>
+internal sealed class SkillRegistration
+{
+    public SkillRegistration(string owner, AiTools.Skills.SkillDefinition skill, bool isPackage = false)
+    {
+        Owner = owner;
+        Skill = skill;
+        IsPackage = isPackage;
+    }
+
+    public string Owner { get; }
+
+    public AiTools.Skills.SkillDefinition Skill { get; }
+
+    /// <summary>获取是否为扩展包随包携带的技能（由宿主整体替换，不随扩展卸载回滚）。</summary>
+    public bool IsPackage { get; }
+}

@@ -79,5 +79,23 @@ module.exports = {
         event.promptSections.push(section);
       }
     });
+
+    // 除了随包 skills/ 目录，脚本扩展也能在 activate 里登记任意数量的技能。
+    // directory 省略时为包根，随包资源以包根为基准解析。
+    api.registerSkill({
+      name: 'hello-js-session',
+      description: '描述 hello-js 本次会话的问候次数，并说明何时使用 hello_js_count 工具。当用户询问问候进度或要延续同一会话风格时加载。',
+      instructions: [
+        '# Hello JS 会话进度',
+        '',
+        '本技能在 `activate` 中由 `api.registerSkill` 动态登记。',
+        '',
+        '1. 读取精确计数：调用 `hello_js_count`，参数 `{}`（只读）。',
+        '2. 需要先累加：调用 `hello_js_count`，参数 `{ "increment": true }`。',
+        '3. 计数为 0 时按首次问候处理。'
+      ].join('\n'),
+      allowedTools: ['hello_js_count'],
+      metadata: { author: 'AiTools Contributors', origin: 'register-skill' }
+    });
   }
 };

@@ -280,6 +280,7 @@ public sealed class ScriptExtension : IExtension, IDisposable
             return JsValue.FromObject(engine, unregister);
         }), true, false, true);
         apiObject.FastAddProperty("registerNamespace", new Action<JsValue>(value => api.RegisterNamespace(ToNamespace(engine, value))), true, false, true);
+        apiObject.FastAddProperty("registerSkill", new Action<JsValue>(value => api.RegisterSkill(ToSkill(engine, moduleContext, value))), true, false, true);
         apiObject.FastAddProperty("registerLoadoutPreparer", new Action<JsValue>(handler =>
         {
             if (!handler.IsCallable()) throw new InvalidOperationException("registerLoadoutPreparer requires a function.");
@@ -726,6 +727,87 @@ public sealed class ScriptExtension : IExtension, IDisposable
         };
     }
 
+    /// <summary>
+    /// 把脚本侧的技能声明转成 <see cref="AiTools.Skills.SkillDefinition"/>。
+    /// <c>directory</c> 可省略：默认为包根，此时随包资源以包根为基准解析。
+    /// </summary>
+    private static AiTools.Skills.SkillDefinition ToSkill(Engine engine, ModuleContext moduleContext, JsValue value)
+    {
+        if (!value.IsObject())
+        {
+            throw new InvalidOperationException("registerSkill requires a skill object.");
+        }
+
+        var obj = value.AsObject();
+        var name = JsStringOrNull(obj.Get("name"))?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new InvalidOperationException("registerSkill requires a skill name.");
+        }
+
+        var description = JsStringOrNull(obj.Get("description"))?.Trim();
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            throw new InvalidOperationException("registerSkill requires a skill description for '" + name + "'.");
+        }
+
+        var directory = JsStringOrNull(obj.Get("directory"));
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = moduleContext.PackageDirectory;
+        }
+        else if (!Path.IsPathRooted(directory))
+        {
+            directory = Path.GetFullPath(Path.Combine(moduleContext.PackageDirectory, directory!));
+        }
+
+        var instructions = JsStringOrNull(obj.Get("instructions"))
+                           ?? JsStringOrNull(obj.Get("body"))
+                           ?? string.Empty;
+
+        var allowedTools = new List<string>();
+        var allowedValue = obj.Get("allowedTools");
+        if (allowedValue.IsArray())
+        {
+            foreach (var item in allowedValue.AsArray().ToArray())
+            {
+                var tool = JsStringOrNull(item);
+                if (!string.IsNullOrWhiteSpace(tool))
+                {
+                    allowedTools.Add(tool!);
+                }
+            }
+        }
+
+        var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var metadataValue = obj.Get("metadata");
+        if (metadataValue.IsObject())
+        {
+            foreach (var key in metadataValue.AsObject().GetOwnPropertyKeys())
+            {
+                var text = JsStringOrNull(metadataValue.AsObject().Get(key));
+                if (text != null)
+                {
+                    metadata[key.ToString()] = text;
+                }
+            }
+        }
+
+        return new AiTools.Skills.SkillDefinition
+        {
+            Name = name!,
+            Description = description!,
+            Instructions = instructions,
+            DirectoryPath = Path.GetFullPath(directory!),
+            SkillFilePath = Path.Combine(Path.GetFullPath(directory!), "SKILL.md"),
+            License = JsStringOrNull(obj.Get("license")),
+            Version = JsStringOrNull(obj.Get("version")),
+            Compatibility = JsStringOrNull(obj.Get("compatibility")),
+            AllowedTools = allowedTools,
+            Metadata = metadata
+        };
+    }
+
     private static ExtensionNoticeKind ParseNoticeKind(string? kind)
         => Enum.TryParse<ExtensionNoticeKind>(kind, true, out var parsed) ? parsed : ExtensionNoticeKind.Info;
 
@@ -767,5 +849,8 @@ public sealed class ScriptExtension : IExtension, IDisposable
                 throw new InvalidOperationException("Sibling package module '" + specifier + "' is only available inside the prepared bundle.");
             throw new InvalidOperationException("External module '" + specifier + "' is not permitted; require() is package-local only.");
         }
+
+        /// <summary>获取扩展包根目录；脚本技能的资源默认相对于它解析。</summary>
+        public string PackageDirectory => _root;
     }
 }

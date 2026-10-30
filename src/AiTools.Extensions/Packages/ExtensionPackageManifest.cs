@@ -49,6 +49,12 @@ public sealed class ExtensionPackageManifest
     /// <summary>获取需要先加载的扩展包名称。</summary>
     public IReadOnlyList<string> Require { get; init; } = Array.Empty<string>();
 
+    /// <summary>
+    /// 获取技能根目录（相对包根）。未声明时回退到包根的 <c>skills/</c> 目录（若存在）。
+    /// 每个子目录包含一份 <c>SKILL.md</c> 即为一个技能；目录本身含 <c>SKILL.md</c> 时视为单个技能。
+    /// </summary>
+    public IReadOnlyList<string> SkillPaths { get; init; } = Array.Empty<string>();
+
     /// <summary>获取搜索关键词。</summary>
     public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
     /// <summary>获取未解释的 JSON 元数据。</summary>
@@ -207,6 +213,7 @@ public sealed class ExtensionPackageManifest
                 Project = project,
                 Output = ReadString("output"),
                 Require = ReadStrings("require"),
+                SkillPaths = ReadStrings("skills"),
                 Keywords = ReadStrings("keywords"),
                 Metadata = metadata,
                 Repository = ReadString("repository"),

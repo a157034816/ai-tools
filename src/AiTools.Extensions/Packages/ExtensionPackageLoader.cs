@@ -77,6 +77,7 @@ public sealed class ExtensionPackageLoader
             }
             manifest = WithPaths(manifest, Path.GetFullPath(root), Path.GetFullPath(manifestPath));
             var package = new ExtensionPackage(manifest, diagnostics);
+            package.SetSkills(ExtensionSkillLoader.Load(manifest, package.Diagnostics.Add));
 
             if (diagnostics.Any(item => item.Kind == PluginDiagnosticKind.Error)) return package;
             if (!NamePattern.IsMatch(manifest.Name) || manifest.Name.Length > 64)
@@ -196,6 +197,7 @@ public sealed class ExtensionPackageLoader
             Project = manifest.Project,
             Output = manifest.Output,
             Require = manifest.Require,
+            SkillPaths = manifest.SkillPaths,
             Keywords = manifest.Keywords,
             Metadata = manifest.Metadata,
             Repository = manifest.Repository,

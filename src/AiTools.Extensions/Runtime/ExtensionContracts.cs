@@ -32,6 +32,26 @@ public sealed class ExtensionCommand
     public override string ToString() => "/" + Name;
 }
 
+/// <summary>扩展注册的一个 Agent Skill，记录归属扩展以便卸载时回滚。</summary>
+/// <remarks>
+/// 技能与工具、命令一样属于扩展的注册面：扩展可以在 <see cref="IExtension.Activate"/> 里
+/// 静态登记，也可以在会话运行期间按需补充。运行时按名称去重，后注册者覆盖先注册者。
+/// </remarks>
+public sealed class ExtensionSkill
+{
+    /// <summary>获取拥有该技能的扩展名（或扩展包名）。</summary>
+    public string ExtensionName { get; init; } = string.Empty;
+
+    /// <summary>获取技能定义，可直接送入 <see cref="AiTools.Skills.SkillCatalog"/>。</summary>
+    public AiTools.Skills.SkillDefinition Definition { get; init; } = new();
+
+    /// <summary>获取技能名称。</summary>
+    public string Name => Definition.Name;
+
+    /// <inheritdoc />
+    public override string ToString() => ExtensionName + ":" + Name;
+}
+
 /// <summary>扩展注册的工具。<see cref="PluginCommand"/> 与扩展工具共用同一个模型可调用面。</summary>
 public sealed class ExtensionTool
 {

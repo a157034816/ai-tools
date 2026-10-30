@@ -7,8 +7,8 @@
 
 | 包 | `kind` | 演示内容 | 入口 |
 |---|---|---|---|
-| [`hello-csharp`](hello-csharp/) | `csharp` | `IExtension` + `IExtensionApi`：带状态计数器命令、工具、`BeforeAgentStart` 提示词段落；加载时由宿主 `dotnet build` | `HelloCSharp.csproj` |
-| [`hello-js`](hello-js/) | `javascript` | CommonJS 入口 `{ name, description, activate(api) }`；同样三件套；`lib/greet.js` 证明包内 `require` | `index.js` |
+| [`hello-csharp`](hello-csharp/) | `csharp` | `IExtension` + `IExtensionApi`：带状态计数器命令、工具、`BeforeAgentStart` 提示词段落；**随包技能 + `api.RegisterSkill` 动态技能**；加载时由宿主 `dotnet build` | `HelloCSharp.csproj` |
+| [`hello-js`](hello-js/) | `javascript` | CommonJS 入口 `{ name, description, activate(api) }`；同样三件套；`lib/greet.js` 证明包内 `require`；**随包技能 + `api.registerSkill` 动态技能** | `index.js` |
 | [`hello-ts`](hello-ts/) | `typescript` | 同上，但状态、参数、返回值全部有类型（`interface`/`enum`/`type`/泛型/`as`）；包内 `import` | `index.ts` |
 | [`hello-ts-uses-js`](hello-ts-uses-js/) | `typescript` | **跨包依赖**：`require: ["hello-js"]` 保证加载顺序，命令处理器用 `ctx.executeTool` 驱动对方包的工具，并处理失败 | `index.ts` |
 
@@ -19,7 +19,12 @@
 | 命令 | `/hello [名字]` | `/hello-js [名字]` | `/hello-ts [名字]` | `/hello-uses-js [inc]` |
 | 工具 | `hello_csharp_count` | `hello_js_count` | `hello_ts_count` | 调用 `hello_js_count` |
 | 事件 | `BeforeAgentStart` | `before_agent_start` | `before_agent_start` | —（只在命令里跨包） |
+| 技能 | `skills/counter-etiquette` + `hello-csharp-session` | `skills/greeting-style` + `hello-js-session` | — | — |
 | 状态桶 | `hello-csharp` | `hello-js` | `hello-ts` | `hello-ts-uses-js` |
+
+技能验证：`ExtensionSkillTests.SamplePackages_ShipSkillsThatLoadThroughThePublicLoader`
+用真实的 `ExtensionPackageManifest.Parse` + `ExtensionSkillLoader.Load` 读取这两个示例包的 `skills/`，
+文档与示例因此不会悄悄脱节。
 
 ## 清单字段
 

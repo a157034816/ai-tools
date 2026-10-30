@@ -59,6 +59,8 @@ public sealed class ExtensionPipeline : IAsyncDisposable
             _activationDiagnostics.AddRange(Runtime.Activate(extension));
         }
 
+        RegisterPackagedSkills();
+
         ActivatePipelineFeatures();
 
         Commands = CommandCatalog.Create(Runtime, Plugins, Options.SharedSkills);
@@ -124,6 +126,47 @@ public sealed class ExtensionPipeline : IAsyncDisposable
     public OutputStyleSelection SelectedStyle { get; private set; } = OutputStyleSelection.None;
     /// <summary>获取关联的磁盘扩展工作区；未配置时为 null。</summary>
     public ExtensionWorkspace? Workspace { get; }
+
+    /// <summary>
+    /// 获取当前运行时可用的全部技能：扩展代码登记的技能与扩展包随包技能，按名称排序。
+    /// 同名后登记/后加载者胜出，与运行时注册表的覆盖规则一致。
+    /// </summary>
+    public IReadOnlyList<AiTools.Skills.SkillDefinition> Skills
+        => Runtime.Skills.Select(item => item.Definition).ToArray();
+
+    /// <summary>获取技能表的版本号；每次技能新增、替换或卸载后单调递增。宿主据此重建技能目录。</summary>
+    public int SkillsVersion => Runtime.SkillsVersion;
+
+    /// <summary>
+    /// 初次登记包技能。工作区是权威来源；此外，直接传给 <see cref="ExtensionPipelineOptions.Extensions"/>
+    /// 的扩展若实现了 <see cref="IPackagedExtension"/>（例如 <see cref="Packages.ExtensionPackage.GetExtensionsWithSkills"/> 的产物），
+    /// 也把它们携带的技能一并登记——否则这些包只有代码生效、技能丢失。
+    /// </summary>
+    private void RegisterPackagedSkills()
+    {
+        var skills = new List<(string PackageName, AiTools.Skills.SkillDefinition Skill)>();
+        if (Workspace != null)
+        {
+            foreach (var package in Workspace.Packages)
+            {
+                foreach (var skill in package.Skills)
+                {
+                    skills.Add((package.Manifest.Name, skill));
+                }
+            }
+        }
+
+        foreach (var extension in Options.Extensions.OfType<IPackagedExtension>())
+        {
+            foreach (var skill in extension.Skills)
+            {
+                skills.Add((extension.PackageName, skill));
+            }
+        }
+
+        // 一次性整体替换，避免逐个登记时同名项互相覆盖的顺序歧义。
+        Runtime.ReplacePackageSkills(skills);
+    }
 
     /// <summary>扫描并加载配置的磁盘扩展工作区。</summary>
     /// <param name="cancellationToken">取消令牌。</param>
@@ -696,6 +739,7 @@ public sealed class ExtensionPipeline : IAsyncDisposable
         {
             _activationDiagnostics.AddRange(Runtime.Activate(extension));
         }
+        RegisterPackagedSkills();
         ActivatePipelineFeatures();
         Commands = CommandCatalog.Create(Runtime, Plugins, Options.SharedSkills);
 
@@ -717,6 +761,23 @@ public sealed class ExtensionPipeline : IAsyncDisposable
         return extensions;
     }
     internal void RefreshCommandCatalog() => Commands = CommandCatalog.Create(Runtime, Plugins, Options.SharedSkills);
+
+    /// <summary>
+    /// 把工作区当前包携带的技能同步进运行时：整体替换此前的包技能。
+    /// 工作区扫描、单个包重载或热重载后调用，使 <see cref="Skills"/> 与磁盘上的包保持一致。
+    /// </summary>
+    /// <remarks>
+    /// 技能是静态 Markdown，不依赖代码是否激活：只要包被工作区接受，其技能就可用。
+    /// 包被移除或重载失败（技能为空）时，旧技能随之消失。
+    /// 直接传给选项的 <see cref="IPackagedExtension"/> 同样参与登记。
+    /// </remarks>
+    /// <returns>技能表是否发生变化。</returns>
+    public bool RefreshPackagedSkills()
+    {
+        var version = Runtime.SkillsVersion;
+        RegisterPackagedSkills();
+        return Runtime.SkillsVersion != version;
+    }
 
 
     /// <summary>构建给模型的插件命令清单（不含扩展命令，扩展命令通过工具暴露）。</summary>

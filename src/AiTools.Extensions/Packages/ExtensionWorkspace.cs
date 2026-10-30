@@ -213,6 +213,7 @@ public sealed class ExtensionWorkspace : IDisposable, IAsyncDisposable
         }
         if (_pipeline != null) _pipeline.RefreshCommandCatalog();
         if (_pipeline != null) await _pipeline.ReloadAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (_pipeline != null && _pipeline.RefreshPackagedSkills()) _pipeline.RefreshCommandCatalog();
         foreach (var package in scanned)
         {
             try { PackageReloaded?.Invoke(package); } catch (Exception) { }
@@ -254,6 +255,7 @@ public sealed class ExtensionWorkspace : IDisposable, IAsyncDisposable
         var package = await _loader.LoadAsync(existing.Manifest.RootPath!, CreateLoaderOptions(otherNames, forceBuild ? true : null), cancellationToken).ConfigureAwait(false);
         lock (_gate) _packages[name] = package;
         if (_pipeline != null) await _pipeline.ReloadAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (_pipeline != null && _pipeline.RefreshPackagedSkills()) _pipeline.RefreshCommandCatalog();
         try { PackageReloaded?.Invoke(package); } catch (Exception) { }
         return package;
     }

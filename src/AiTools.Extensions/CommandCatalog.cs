@@ -39,7 +39,7 @@ public sealed class ResolvedCommand
     public PluginSkill? Skill { get; init; }
 
     /// <summary>
-    /// 获取共享 <c>.agents</c> 目录发现的技能；普通命令时为 null。
+    /// 获取共享 <c>.agents</c> 目录或扩展登记的技能；普通命令时为 null。
     /// 这类命令没有插件宿主，执行时直接把技能的指令正文作为提示词。
     /// </summary>
     public AiTools.Skills.SkillDefinition? SharedSkill { get; init; }
@@ -47,7 +47,7 @@ public sealed class ResolvedCommand
     /// <summary>获取是否为代码实现的扩展命令。</summary>
     public bool IsCodeCommand => ExtensionCommand != null;
 
-    /// <summary>获取命令是否由 skill 提供（插件技能或共享 <c>.agents</c> 技能）。</summary>
+    /// <summary>获取命令是否由 skill 提供（插件技能、扩展技能或共享 <c>.agents</c> 技能）。</summary>
     public bool IsSkillCommand => Skill != null || SharedSkill != null;
 
     /// <summary>获取短名是否与其它命令冲突。</summary>
@@ -60,12 +60,12 @@ public sealed class ResolvedCommand
     public override string ToString() => "/" + Name;
 }
 
-/// <summary>
-/// 命令目录：合并扩展命令与插件命令，解析短名/限定名，并统一渲染成要发送给模型的提示词。
-/// </summary>
+/// <summary>命令目录：合并扩展命令、插件命令与技能命令，解析短名/限定名，并统一渲染成要发送给模型的提示词。</summary>
 /// <remarks>
 /// 优先级与 Pi 的"后注册胜出"一致：扩展命令先登记、插件命令随后登记，
 /// 因此同名短命令会被插件命令覆盖；反过来，用限定名总是精确命中插件命令。
+/// 技能命令的优先级从低到高为：插件 → 扩展 → 共享 <c>.agents</c>；
+/// 同名时靠后的来源更具体，前面的来源不再生成第二条 <c>/skill:</c> 命令。
 /// 命令目录只读，可在 UI 线程安全地重复查询。
 /// </remarks>
 public sealed class CommandCatalog
@@ -157,7 +157,7 @@ public sealed class CommandCatalog
     /// <param name="plugins">插件目录（可为 null）。</param>
     /// <param name="sharedSkills">
     /// 共享 <c>.agents</c> 技能；为 null 时只使用扩展与插件。
-    /// 插件已经提供了同名技能时以插件为准（插件更具体）。
+    /// 优先级从低到高为：插件 → 扩展 → 共享；同名时靠后的来源胜出。
     /// </param>
     public static CommandCatalog Create(
         ExtensionRuntime? runtime,
@@ -213,13 +213,36 @@ public sealed class CommandCatalog
             commands.AddRange(CreateSkillCommands(plugins));
         }
 
+        // 扩展登记的技能：优先级高于共享 .agents，低于插件。
+        var claimedSkillNames = new HashSet<string>(
+            plugins?.Skills.Select(skill => skill.Name) ?? Enumerable.Empty<string>(),
+            StringComparer.OrdinalIgnoreCase);
+
+        if (runtime != null)
+        {
+            foreach (var skill in runtime.Skills)
+            {
+                // 插件技能更具体；同名的扩展技能不生成第二条 /skill: 命令。
+                if (!claimedSkillNames.Add(skill.Name))
+                {
+                    continue;
+                }
+
+                commands.Add(new ResolvedCommand
+                {
+                    Name = ResolvedCommand.SkillPrefix + skill.Name,
+                    ShortName = ResolvedCommand.SkillPrefix + skill.Name,
+                    ArgumentHint = "[指令]",
+                    Description = skill.Definition.Description,
+                    Source = skill.ExtensionName,
+                    SharedSkill = skill.Definition
+                });
+            }
+        }
+
         if (sharedSkills != null)
         {
-            var pluginSkillNames = new HashSet<string>(
-                plugins?.Skills.Select(skill => skill.Name) ?? Enumerable.Empty<string>(),
-                StringComparer.OrdinalIgnoreCase);
-
-            commands.AddRange(CreateSharedSkillCommands(sharedSkills, pluginSkillNames));
+            commands.AddRange(CreateSharedSkillCommands(sharedSkills, claimedSkillNames));
         }
 
         return new CommandCatalog(commands, plugins, runtime);
@@ -228,12 +251,12 @@ public sealed class CommandCatalog
     /// <summary>把共享 <c>.agents</c> 技能转成 <c>/skill:&lt;name&gt;</c> 命令。</summary>
     private static IEnumerable<ResolvedCommand> CreateSharedSkillCommands(
         IEnumerable<AiTools.Skills.SkillDefinition> skills,
-        ISet<string> pluginSkillNames)
+        ISet<string> claimedSkillNames)
     {
         foreach (var skill in skills)
         {
-            // 插件技能更具体，同名时不覆盖它。
-            if (pluginSkillNames.Contains(skill.Name))
+            // 插件与扩展技能已经覆盖同名技能，共享目录不再重复登记。
+            if (!claimedSkillNames.Add(skill.Name))
             {
                 continue;
             }

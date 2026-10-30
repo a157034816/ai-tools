@@ -250,6 +250,24 @@ public interface IExtension
     void Activate(IExtensionApi api);
 }
 
+/// <summary>
+/// 由扩展包产出的扩展额外实现此接口，把随包技能与包名一并交给宿主。
+/// </summary>
+/// <remarks>
+/// 工作区路径下技能由 <c>ExtensionPackage</c> 统一登记，不需要这个接缝；
+/// 只有在宿主手动 <c>ExtensionPackageLoader.LoadAsync</c> 后把
+/// <c>package.Extensions</c> 直接交给 <c>ExtensionPipelineOptions.Extensions</c> 时才需要，
+/// 否则包里的 <c>SKILL.md</c> 会随代码一起被激活、却看不到技能。
+/// </remarks>
+public interface IPackagedExtension
+{
+    /// <summary>获取产出该扩展的包名。</summary>
+    string PackageName { get; }
+
+    /// <summary>获取随包携带的技能。</summary>
+    IReadOnlyList<AiTools.Skills.SkillDefinition> Skills { get; }
+}
+
 /// <summary>扩展在 <see cref="IExtension.Activate"/> 中使用的注册接口。</summary>
 public interface IExtensionApi
 {
@@ -280,6 +298,13 @@ public interface IExtensionApi
     /// <summary>登记工具命名空间（同名后注册者覆盖先注册者）。</summary>
     /// <param name="namespace">命名空间定义。</param>
     void RegisterNamespace(ToolNamespace @namespace);
+
+    /// <summary>
+    /// 登记一个 skill（同名后注册者覆盖先注册者）。登记后即可被 <c>load_skill</c> 加载，
+    /// 并出现在 <c>/skill:&lt;名称&gt;</c> 命令中；扩展可以在激活或会话期间随时扩充技能。
+    /// </summary>
+    /// <param name="skill">技能定义；名称与描述不能为空。</param>
+    void RegisterSkill(AiTools.Skills.SkillDefinition skill);
 
     /// <summary>
     /// 注册装载准备器：在构建 <see cref="ToolLoadout"/> 时按注册顺序改写它。
