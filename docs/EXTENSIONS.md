@@ -35,12 +35,13 @@ ExtensionPipeline          宿主唯一入口：命令目录、工具表、会�
 ├── ExtensionRuntime       注册表 + 事件分发（Pi 的 pi.on / registerTool / registerCommand）
 │   ├── ExtensionCommand   /goal 这类代码命令
 │   ├── ExtensionTool      模型可调用，带曝光级别与可达范围
+│   ├── ExtensionSkill     扩展登记或随包携带的技能（api.RegisterSkill / skills/）
 │   ├── ToolLoadout        装载结果：Declared / Callable / All + 准备器改写
 │   ├── ToolSearchTool     内置 tool_search：查找并激活 Codemode/Deferred 工具
 │   ├── CodemodeTool       内置 codemode：Jint 沙箱中的 JavaScript 工具脚本
 │   └── ExtensionSession   session_start / session_shutdown、清理回调
 ├── ExtensionStateStore    按扩展名分桶的 JSON 状态，可选持久化
-├── CommandCatalog         扩展命令 + 插件命令的统一解析
+├── CommandCatalog         扩展命令 + 插件命令 + 技能命令的统一解析
 ├── OutputStyleCatalog     插件/宿主输出风格汇总，SelectedStyle 改写系统提示
 ├── PermissionPolicy       规则引擎（deny > ask > allow）+ PermissionGate 闸门
 │   └── ProjectTrust       加载项目插件前判定 Trusted / Untrusted
@@ -49,6 +50,7 @@ ExtensionPipeline          宿主唯一入口：命令目录、工具表、会�
 └── Packages               磁盘扩展包子系统（见 EXTENSIONS_AUTHORING.md）
     ├── ExtensionWorkspace      扫描根目录、依赖排序、热重载、文件监视、Git 源码
     ├── ExtensionPackageLoader  单包加载：清单校验 → 构建/转译 → 扩展实例
+    ├── ExtensionSkillLoader    读取包根 skills/ 或清单 skills 声明的 SKILL.md
     ├── ExtensionPackageBuilder C# 构建到 bin/ext/<ticks>；脚本走 IScriptExtensionProvider
     ├── ExtensionAssemblyLoader 可回收 AssemblyLoadContext 加载程序集
     ├── ExtensionSourceManager  git clone / pull --ff-only / remove
@@ -99,6 +101,11 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
     Extensions = new IExtension[] { new CounterExtension(), new GoalExtension(), new PlanExtension() }
 });
 ```
+
+扩展还可以携带技能，两种方式可混用：随包 `skills/<name>/SKILL.md`（无需代码），
+或在 `Activate` 里 `api.RegisterSkill(...)` 动态登记。手动加载的包请用
+`package.GetExtensionsWithSkills()` 取代 `package.Extensions`，否则随包技能不会登记。
+详见 [`EXTENSIONS_AUTHORING.md` 的「随包技能」](EXTENSIONS_AUTHORING.md#随包技能skills)。
 
 ### provider 级钩子如何生效
 
@@ -521,6 +528,20 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 | `/plugin:review` | 技能原本生成的插件命令，与上一条共用同一个 `PluginCommand` |
 
 在命令面板输入 `/` 后，不带前缀的技能名（如 `/review`）同样能搜到该技能。`user-invocable: false` 的 skill 不生成命令，仍可经 `load_skill` 由模型加载。
+
+技能还可以来自**扩展**，不限于插件：
+
+| 来源 | 载体 | 优先级 |
+|---|---|---|
+| 插件 | `skills/<name>/SKILL.md`、`commands/*.md` 转换的命令 | 最高（最具体） |
+| 扩展代码 | `IExtensionApi.RegisterSkill(SkillDefinition)` | 中 |
+| 扩展包 | 包根 `skills/` 或清单 `skills` 声明的目录 | 中（与扩展代码同表，后登记者胜出） |
+| 共享 `.agents` | `~/.agents/skills`、`<project>/.agents/skills` | 最低 |
+
+同名技能只生成一条 `/skill:` 命令。扩展在会话运行期间新登记的技能会立即出现在
+`ExtensionRuntime.Skills` 中，`ExtensionPipeline.Skills` 汇总代码技能与包技能，
+`SkillsVersion` 每次变化自增——宿主（例如 WPF 的 `SkillCatalogChatToolProvider`）
+据此按需重建 `load_skill` 工具集与系统提示里的技能清单，无需重启。
 
 ### 插件侧限制
 

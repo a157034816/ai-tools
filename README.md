@@ -24,7 +24,7 @@ Console.WriteLine(response.GetText());
 - **完整能力面**：聊天（含流式、多模态、JSON Schema 结构化输出）、函数/工具调用、嵌入、图像生成、语音合成与转录。
 - **MCP 客户端**：stdio / Streamable HTTP / 旧版 HTTP+SSE 三种传输，`McpToolBridge` 一行代码把 MCP 工具变成模型可调用的函数。
 - **可编程扩展**：`IExtension` 注册命令、模型可调用工具（`Direct`/`ModelOnly`/`Codemode`/`Deferred`/`Hidden` 五种曝光 + 激活集合 + `prepareLoadout`/`namespace`）、生命周期事件与会话状态；内置 `tool_search`、JavaScript `codemode`、通用提问工具 `ask` 与 `/goal`、`/plan` 两个有状态工作流。
-- **扩展包（Extension Packages）**：一个目录 + 根部 `extension.json` 就是一个可 `git init` 的扩展包，`kind` 支持 C#（宿主 `dotnet build` 到独立目录 + 可回收 `AssemblyLoadContext`）、JavaScript 与 TypeScript（Jint + 内置 strip-and-rewrite 转译，无需 `tsc`/Node）；`ExtensionWorkspace` 负责扫描、`require` 依赖排序、热重载与文件监视，`ExtensionSourceManager` 支持 `git clone` 安装；`/extension` 子命令管理与查看诊断。
+- **扩展包（Extension Packages）**：一个目录 + 根部 `extension.json` 就是一个可 `git init` 的扩展包，`kind` 支持 C#（宿主 `dotnet build` 到独立目录 + 可回收 `AssemblyLoadContext`）、JavaScript 与 TypeScript（Jint + 内置 strip-and-rewrite 转译，无需 `tsc`/Node）；包可携带任意数量的技能（`skills/<name>/SKILL.md` 或清单 `skills` 声明），也能在代码里 `api.RegisterSkill` 动态登记；`ExtensionWorkspace` 负责扫描、`require` 依赖排序、热重载与文件监视，`ExtensionSourceManager` 支持 `git clone` 安装；`/extension` 子命令管理与查看诊断。
 - **输出风格 / 权限 / 信任 / 工作流**：`output-styles` 改措辞（`/output-style` 切换）；`PermissionPolicy`（deny > ask > allow）+ `ProjectTrust` 在加载项目插件前判定；Jint 沙箱里的 `workflows/*.js` 成为斜杠命令。
 - **Claude Code 插件**：直接加载 `.claude-plugin/plugin.json` 插件包，`commands/*.md`、`skills/*/SKILL.md`、`.mcp.json`、`output-styles/*.md`、`workflows/*.js` 全部生效，与扩展命令共用同一个 `/` 面板。
 - **用户级数据根**：所有运行时读写收敛在 `~/.ai-tools`（设置、会话、技能、扩展），与 Claude Code 的 `~/.claude`、Codex 的 `~/.codex` 同一套布局约定；`AiToolsPaths` 是唯一路径来源，`AITOOLS_HOME` 可覆盖根目录。
@@ -302,6 +302,10 @@ WPF 宿主一行接入：
 ```csharp
 AiToolsWpf.RegisterToolProvider(SkillChatToolProvider.FromDirectory("skills"));
 ```
+
+技能也可以来自**扩展**：扩展包在包根放 `skills/<name>/SKILL.md`（无需代码），或在 `Activate` 里
+`api.RegisterSkill(...)`（JS/TS 为 `api.registerSkill({...})`）动态登记任意数量。它们与插件技能、
+共享 `.agents` 技能合并进同一份 `load_skill` 目录与 `/skill:<名称>` 命令，会话期间新增的技能在下一轮自动生效。
 
 详见 [`docs/SKILLS.md`](docs/SKILLS.md)；演示见 `samples/AiTools.Wpf.Demo/skills/commit-message`。
 

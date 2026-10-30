@@ -17,6 +17,10 @@
 my-extension/
 ├── extension.json     # 唯一必需文件
 ├── README.md
+├── skills/            # 可选：随包技能，每个子目录一份 SKILL.md
+│   └── my-skill/
+│       ├── SKILL.md
+│       └── references/
 ├── .gitignore
 └── …                  # 其余内容随 kind 而定
 ```
@@ -49,6 +53,7 @@ my-extension/
 | `project` | C# 常用 | string | `null` | 相对包根的 csproj。省略时取包根下**唯一**的 `*.csproj` |
 | `output` | 否 | string | 省略时 `Path.Combine("bin", "ext")` | **C# 构建根目录**（相对包根）。宿主每次写入 `<output>/<ticks>/`。脚本包不使用此字段 |
 | `require` | 否 | string[] | `[]` | 必须先加载的包名 |
+| `skills` | 否 | string[] | `[]` | 技能根目录（相对包根）。省略时回退到包根的 `skills/`；显式声明后**只**加载声明的位置 |
 | `keywords` | 否 | string[] | `[]` | 搜索关键词 |
 | `metadata` | 否 | object | `{}` | 未解释的任意 JSON（`IReadOnlyDictionary<string, JsonElement>`） |
 | `repository` | 否 | string | `null` | 源码仓库 URL |
@@ -68,6 +73,7 @@ my-extension/
 | `project` | `ExtensionPackageBuilder.ResolveProject` |
 | `output` | `ExtensionPackageBuilder.ResolveOutputRoot`（`ExtensionPackageManifest.Output` 的 XML 注释明确写着「脚本包不使用此字段」） |
 | `require` | `ExtensionWorkspace.OrderByRequirements` + `ScanAsync` 的加载前检查；`ScriptModuleCompiler` 的跨包打包 |
+| `skills` | `ExtensionSkillLoader.ResolveSkillRoots`；结果并入 `ExtensionPackage.Skills`，再经 `ExtensionPipeline` 登记到运行时 |
 
 ### `kind` 的推断
 
@@ -79,6 +85,80 @@ my-extension/
 4. 否则 `null`，最终回退 `CSharp`。
 
 脚本包缺少 `entry` 是**错误**：`Required field 'entry' is missing for inferred kind <kind>.`
+
+### 随包技能（`skills`）
+
+三种 `kind` 都可以携带任意数量的 Agent Skill。技能就是普通的 `SKILL.md` 目录，
+布局与 [`SKILLS.md`](SKILLS.md) 完全一致：
+
+```
+my-extension/
+├── extension.json
+└── skills/
+    ├── pdf-tools/
+    │   ├── SKILL.md          # 必需：frontmatter 含 name / description
+    │   └── references/style-guide.md
+    └── diagramming/
+        └── SKILL.md
+```
+
+- **发现规则**（`ExtensionSkillLoader.Load`）：清单 `skills` 声明的每个路径 → 若未声明则回退 `skills/`。
+  路径可以是技能根（子目录各含 `SKILL.md`），也可以直接指向**单个**技能目录。
+- **文件布局**不递归：只看技能根的直接子目录，每个含 `SKILL.md` 的子目录是一个技能。
+- **无效技能**被跳过并记录 `Warning` 诊断，不影响包的代码部分；包仍然加载。
+- **没有代码也能只有技能**：`kind` 仍必须是有效值（脚本包需要 `entry`），但 `activate` 可以是空的。
+  技能会在管道构造与工作区扫描后进入运行时。
+
+运行时行为：
+
+| 位置 | 结果 |
+|---|---|
+| `ExtensionPackage.Skills` | 包内技能，按名称排序；`Unload()` 后清空 |
+| `ExtensionPipeline.Skills` | 扩展代码登记 + 包携带的全部技能 |
+| `CommandCatalog` | 每个技能一条 `/skill:<名称>`，执行即把正文作为提示词 |
+| `load_skill` / `read_skill_file` | 模型按需加载；`read_skill_file` 可读取技能目录内的随包资源 |
+
+代码扩展（C# / JS / TS）除了随包 `SKILL.md`，还可以在 `Activate` 里**动态登记**任意数量的技能：
+
+```csharp
+// C#
+api.RegisterSkill(new AiTools.Skills.SkillDefinition
+{
+    Name = "generated-guide",
+    Description = "Explains the generated API.",
+    Instructions = "# Guide\n\n...",
+    DirectoryPath = packageRoot,
+    SkillFilePath = Path.Combine(packageRoot, "SKILL.md")
+});
+```
+
+```javascript
+// JS / TS
+api.registerSkill({
+  name: 'generated-guide',
+  description: 'Explains the generated API.',
+  instructions: '# Guide\n\n...',
+  directory: '.',                    // 可选，相对包根；省略时为包根
+  allowedTools: ['read'],            // 可选
+  metadata: { author: 'me' }         // 可选
+});
+```
+
+同名技能后登记/后加载者胜出；在命令面板里，插件技能比扩展技能更具体，扩展技能又比共享
+`.agents` 技能更具体（优先级：插件 → 扩展 → 共享），同名时只生成一条 `/skill:` 命令。
+技能表变化后 `ExtensionRuntime.SkillsVersion` 自增，宿主据此重建技能目录；
+工作区扫描或单个包重载会整体替换包技能，扩展代码登记的技能不受影响。
+
+> `registerSkill` 只是登记，不读取磁盘。若技能带随包资源，把 `directory` 指向资源所在目录，
+> 模型之后可以用 `read_skill_file` 读取。
+
+宿主接入方式决定技能如何登记：
+
+| 加载方式 | 代码 + 随包技能 | 说明 |
+|---|---|---|
+| `ExtensionWorkspace.ScanAsync` | 自动 | 管道构造与每次扫描/重载后调用 `RefreshPackagedSkills` 同步 |
+| 手动 `ExtensionPackageLoader.LoadAsync` 后把 `package.Extensions` 交给管道 | **随包技能丢失** | 只有代码生效 |
+| 手动加载后改用 `package.GetExtensionsWithSkills()` | 自动 | 返回实现 `IPackagedExtension` 的包装器，管道据此登记随包技能 |
 
 ## 3. C# 包
 
@@ -681,6 +761,7 @@ my-extension/
 - **`minHostVersion` 的检查范围**：仅 JavaScript / TypeScript 脚本包由 `ScriptExtensionProvider` 强制检查；C# 包的加载器不执行版本比较（见第 2 节）。
 - **任意 npm 依赖**：`require` 只接受包内文件与 `require` 声明的兄弟包；Node 内置模块被显式拒绝。
 - **沙箱内的文件/进程访问**：`process`、`Buffer` 被置为 `undefined`，`fs`/`child_process` 抛异常。
+- **技能目录的递归扫描**：`skills/` 只认直接子目录；嵌套层级需要显式写进清单 `skills` 或拆成多个技能。
 
 ---
 
