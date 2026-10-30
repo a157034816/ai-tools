@@ -260,8 +260,8 @@ public static class AiToolsWpf
         => Options.PluginHostOptions?.ProjectDirectory ?? Environment.CurrentDirectory;
 
     /// <summary>
-    /// 获取合并后的技能 provider：插件技能 + 共享 <c>.agents</c> 技能。
-    /// 没有任何技能时返回 null；实例在整个进程中复用。
+    /// 获取合并后的技能 provider：插件技能 + 扩展技能（扩展代码与扩展包）+ 共享 <c>.agents</c> 技能。
+    /// 没有任何技能时返回 null；实例在整个进程中复用，但目录会在扩展新增技能后自动刷新。
     /// </summary>
     public static Skills.SkillCatalogChatToolProvider? PluginSkillProvider
     {
@@ -276,17 +276,74 @@ public static class AiToolsWpf
 
                 var plugins = PluginHost?.Catalog;
                 var shared = SharedAgents;
+                var pipeline = Pipeline;
                 if ((plugins == null || plugins.Skills.Count == 0) &&
-                    (shared == null || shared.Skills.Count == 0))
+                    (shared == null || shared.Skills.Count == 0) &&
+                    (pipeline == null || pipeline.Skills.Count == 0))
                 {
+                    // 不缓存"没有技能"：扩展可能稍后才登记，下次访问时重新判断。
                     return null;
                 }
 
-                _pluginSkillProvider = Skills.SkillCatalogChatToolProvider.Create(plugins, shared);
+                // 目录工厂每次重新合并：扩展在会话期间新登记技能后，provider 访问时自动重建。
+                _pluginSkillProvider = new Skills.SkillCatalogChatToolProvider(
+                    () => BuildSkillCatalog(plugins, shared, pipeline?.Skills));
                 _skillProviderResolved = true;
                 return _pluginSkillProvider;
             }
         }
+    }
+
+    /// <summary>
+    /// 合并技能来源，优先级从低到高：插件 → 扩展运行时 → 共享 <c>.agents</c>（项目级最高）。
+    /// 同名时靠后的来源胜出。
+    /// </summary>
+    private static AiTools.Skills.SkillCatalog BuildSkillCatalog(
+        AiTools.Extensions.PluginCatalog? plugins,
+        AiTools.Skills.SharedAgentsCatalog? shared,
+        IReadOnlyList<AiTools.Skills.SkillDefinition>? extensionSkills)
+    {
+        var sources = new List<AiTools.Skills.SkillDefinition>();
+        if (plugins != null)
+        {
+            sources.AddRange(plugins.ToSkillCatalog().Skills);
+        }
+
+        if (extensionSkills != null)
+        {
+            sources.AddRange(extensionSkills);
+        }
+
+        if (shared != null)
+        {
+            sources.AddRange(shared.Skills.Skills);
+        }
+
+        return AiTools.Skills.SkillCatalog.FromSkills(MergeByPriority(sources));
+    }
+
+    /// <summary>按出现顺序合并技能；同名时最后一个定义胜出。</summary>
+    private static IReadOnlyList<AiTools.Skills.SkillDefinition> MergeByPriority(
+        IEnumerable<AiTools.Skills.SkillDefinition> sources)
+    {
+        var winners = new Dictionary<string, AiTools.Skills.SkillDefinition>(StringComparer.OrdinalIgnoreCase);
+        var order = new List<string>();
+        foreach (var skill in sources)
+        {
+            if (string.IsNullOrWhiteSpace(skill.Name))
+            {
+                continue;
+            }
+
+            if (!winners.ContainsKey(skill.Name))
+            {
+                order.Add(skill.Name);
+            }
+
+            winners[skill.Name] = skill;
+        }
+
+        return order.Select(name => winners[name]).ToArray();
     }
 
     /// <summary>

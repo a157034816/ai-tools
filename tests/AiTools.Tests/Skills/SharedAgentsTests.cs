@@ -265,4 +265,51 @@ public sealed class SharedAgentsTests : IDisposable
         Assert.Equal(0, provider.SkillCount);
         Assert.Empty(provider.GetTools());
     }
+
+    [Fact]
+    public void SkillCatalogChatToolProvider_RefreshesWhenFactoryContentChanges()
+    {
+        // 模拟扩展在会话期间登记技能：工厂返回的内容随时变化。
+        var skills = new List<SkillDefinition>();
+        var provider = new SkillCatalogChatToolProvider(() => SkillCatalog.FromSkills(skills.ToArray()));
+
+        Assert.Null(provider.GetTools().FirstOrDefault(tool => tool.Name == SkillToolset.LoadSkillToolName));
+        Assert.Empty(provider.Toolset.Skills);
+
+        skills.Add(new SkillDefinition
+        {
+            Name = "late-skill",
+            Description = "Registered later.",
+            Instructions = "Do it.",
+            DirectoryPath = _root,
+            SkillFilePath = Path.Combine(_root, "SKILL.md")
+        });
+
+        // 访问即刷新：新技能出现在工具与清单里，无需重新注册 provider。
+        Assert.Contains(provider.GetTools(), tool => tool.Name == SkillToolset.LoadSkillToolName);
+        Assert.Equal("late-skill", Assert.Single(provider.Toolset.Skills).Name);
+        Assert.Contains("late-skill", provider.Toolset.BuildSystemPrompt());
+    }
+
+    [Fact]
+    public void SkillCatalogChatToolProvider_UnchangedContentKeepsToolsetInstance()
+    {
+        var skills = new[]
+        {
+            new SkillDefinition
+            {
+                Name = "stable",
+                Description = "Stable.",
+                DirectoryPath = _root,
+                SkillFilePath = Path.Combine(_root, "SKILL.md")
+            }
+        };
+
+        // 每次调用都返回新目录对象，但内容相同。
+        var provider = new SkillCatalogChatToolProvider(() => SkillCatalog.FromSkills(skills));
+        var first = provider.Toolset;
+        provider.GetTools();
+
+        Assert.Same(first, provider.Toolset);
+    }
 }

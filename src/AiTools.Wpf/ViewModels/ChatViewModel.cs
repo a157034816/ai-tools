@@ -1443,6 +1443,15 @@ public sealed class ChatViewModel : ObservableObject
         try
         {
             var options = AiToolsWpf.Options;
+
+            // 技能 provider 可能晚于页面初始化才可用（扩展在会话期间登记技能），
+            // 因此在构建工具表之前补一次注册，保证 load_skill 与技能清单同步出现。
+            _skillCatalogProvider ??= AiToolsWpf.PluginSkillProvider;
+            if (_skillCatalogProvider != null)
+            {
+                AiToolsWpf.RegisterToolProviderOnce(_skillCatalogProvider);
+            }
+
             var registrations = BuildToolRegistrations(options);
             var tools = registrations.Select(registration => registration.Definition).ToList();
 
@@ -1511,6 +1520,12 @@ public sealed class ChatViewModel : ObservableObject
             }
 
             // 技能清单：与 SkillToolset 的渐进式披露配合，模型据此决定何时 load_skill。
+            // 先刷新：扩展可能在上一轮或会话期间新登记了技能。
+            if (_skillCatalogProvider != null)
+            {
+                _skillCatalogProvider.Refresh();
+            }
+
             var skillPrompt = _skillCatalogProvider?.Toolset.BuildSystemPrompt();
             if (!string.IsNullOrWhiteSpace(skillPrompt))
             {
