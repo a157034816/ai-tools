@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace AiTools.Wpf.Configuration;
+namespace AiTools.Configuration;
 
 /// <summary>内置服务商工厂支持的通信协议。</summary>
 public static class ProviderProtocols
@@ -44,7 +44,7 @@ public sealed class ModelConfig
     public string GetDisplayName() => string.IsNullOrWhiteSpace(DisplayName) ? Id : DisplayName;
 }
 
-/// <summary>设置页中编辑的服务商 endpoint 配置。</summary>
+/// <summary>设置页或 CLI 中编辑的服务商 endpoint 配置。</summary>
 public sealed class ProviderConfig
 {
     /// <summary>用于匹配描述符和选择的稳定标识符。</summary>
@@ -97,7 +97,9 @@ public sealed class ProviderConfig
         Models = Models.Select(m => m.Clone()).ToList()
     };
 
-    internal static bool IsLocalEndpoint(string url)
+    /// <summary>判断 URL 是否指向本机（本机 endpoint 通常不需要 API Key）。</summary>
+    /// <param name="url">要检查的 URL。</param>
+    public static bool IsLocalEndpoint(string url)
     {
         return Uri.TryCreate(url, UriKind.Absolute, out var uri)
             && (uri.IsLoopback || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase));

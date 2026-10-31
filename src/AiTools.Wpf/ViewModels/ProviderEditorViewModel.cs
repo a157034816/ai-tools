@@ -5,7 +5,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
 using AiTools.Abstractions;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.Mvvm;
 
 namespace AiTools.Wpf.ViewModels;

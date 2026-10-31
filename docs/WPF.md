@@ -4,6 +4,12 @@
 
 ## 集成方式
 
+> 配置类型（`AppSettings`、`ProviderConfig`、`JsonFileSettingsStore`、`DpapiSecretProtector`、
+> `ProviderDescriptor`、`BuiltInProviderFactory`）已移到跨平台的 `AiTools.Configuration` 包，
+> 命名空间为 `AiTools.Configuration`；`AiToolsWpfException` 继承 `AiToolsConfigurationException`，
+> 现有 `catch` 无需修改。同一个设置文件也被官方终端 Agent（`AiTools.Terminal`）使用，
+> 详见 [`TERMINAL.md`](TERMINAL.md)。
+
 ### 1. 启动时初始化全局配置
 
 ```csharp

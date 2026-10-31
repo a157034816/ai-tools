@@ -8,7 +8,7 @@ using AiTools.Core.Sessions;
 using AiTools.Extensions;
 using AiTools.Extensions.Workflows;
 using AiTools.Wpf;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.ViewModels;
 using Xunit;
 

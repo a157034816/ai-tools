@@ -4,7 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using AiTools.Abstractions;
 using AiTools.Wpf;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using Xunit;
 
 namespace AiTools.Tests.Wpf;
@@ -112,7 +112,7 @@ public class JsonFileSettingsStoreTests : IDisposable
         await File.WriteAllTextAsync(_path, "{ not json");
         var store = new JsonFileSettingsStore(_path, new PassThroughProtector());
 
-        var ex = await Assert.ThrowsAsync<AiToolsWpfException>(() => store.LoadAsync());
+        var ex = await Assert.ThrowsAsync<AiToolsConfigurationException>(() => store.LoadAsync());
         Assert.Contains("设置文件", ex.Message);
     }
 
@@ -283,7 +283,7 @@ public class BuiltInProviderFactoryTests
     {
         var factory = new BuiltInProviderFactory();
 
-        Assert.Throws<AiToolsWpfException>(() => factory.CreateChatClient(new ProviderConfig
+        Assert.Throws<AiToolsConfigurationException>(() => factory.CreateChatClient(new ProviderConfig
         {
             Protocol = ProviderProtocols.OpenAi,
             ApiKey = "k"
@@ -295,7 +295,7 @@ public class BuiltInProviderFactoryTests
     {
         var factory = new BuiltInProviderFactory();
 
-        var ex = Assert.Throws<AiToolsWpfException>(() => factory.CreateChatClient(new ProviderConfig
+        var ex = Assert.Throws<AiToolsConfigurationException>(() => factory.CreateChatClient(new ProviderConfig
         {
             Protocol = "unknown",
             BaseUrl = "https://x",

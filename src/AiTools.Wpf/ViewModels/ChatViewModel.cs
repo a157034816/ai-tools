@@ -12,7 +12,7 @@ using System.Windows.Threading;
 using AiTools.Abstractions;
 using AiTools.Core.Chat;
 using AiTools.Core.Sessions;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.Mvvm;
 using AiTools.Wpf.Skills;
 using AiTools.Wpf.ViewModels;

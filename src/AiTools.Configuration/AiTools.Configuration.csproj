@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <RootNamespace>AiTools.Configuration</RootNamespace>
+    <AssemblyName>AiTools.Configuration</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Shared host configuration for AiTools: settings model and JSON store, secret protection, provider templates and the built-in provider factory.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\AiTools.Core\AiTools.Core.csproj" />
+    <ProjectReference Include="..\AiTools.OpenAI\AiTools.OpenAI.csproj" />
+    <ProjectReference Include="..\AiTools.Anthropic\AiTools.Anthropic.csproj" />
+    <ProjectReference Include="..\AiTools.Gemini\AiTools.Gemini.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

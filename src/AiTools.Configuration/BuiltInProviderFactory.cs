@@ -1,14 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using AiTools.Abstractions;
 using AiTools.Anthropic;
 using AiTools.Gemini;
 using AiTools.OpenAI;
 
-namespace AiTools.Wpf.Configuration;
+namespace AiTools.Configuration;
 
 /// <summary>
 /// 默认的 <see cref="IProviderFactory"/> 实现，将服务商配置映射到内置的 AiTools 客户端。
@@ -29,12 +27,12 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
 
         if (string.IsNullOrWhiteSpace(provider.Protocol))
         {
-            throw new AiToolsWpfException($"服务商 {provider.DisplayName} 未指定协议。");
+            throw new AiToolsConfigurationException($"服务商 {provider.DisplayName} 未指定协议。");
         }
 
         if (string.IsNullOrWhiteSpace(provider.BaseUrl))
         {
-            throw new AiToolsWpfException($"服务商 {provider.DisplayName} 未配置 Base URL。");
+            throw new AiToolsConfigurationException($"服务商 {provider.DisplayName} 未配置 Base URL。");
         }
 
         var cacheKey = BuildCacheKey(provider);
@@ -83,7 +81,7 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
                 });
 
             default:
-                throw new AiToolsWpfException($"不支持的服务商协议：{provider.Protocol}。可用协议：{string.Join(", ", ProviderProtocols.All)}。");
+                throw new AiToolsConfigurationException($"不支持的服务商协议：{provider.Protocol}。可用协议：{string.Join(", ", ProviderProtocols.All)}。");
         }
     }
 
@@ -97,12 +95,12 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
 
         if (string.IsNullOrWhiteSpace(provider.Protocol))
         {
-            throw new AiToolsWpfException($"服务商 {provider.DisplayName} 未指定协议。");
+            throw new AiToolsConfigurationException($"服务商 {provider.DisplayName} 未指定协议。");
         }
 
         if (string.IsNullOrWhiteSpace(provider.BaseUrl))
         {
-            throw new AiToolsWpfException($"服务商 {provider.DisplayName} 未配置 Base URL。");
+            throw new AiToolsConfigurationException($"服务商 {provider.DisplayName} 未配置 Base URL。");
         }
 
         var baseAddress = new Uri(provider.BaseUrl, UriKind.Absolute);
@@ -131,7 +129,7 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
                 });
 
             default:
-                throw new AiToolsWpfException($"不支持的服务商协议：{provider.Protocol}。可用协议：{string.Join(", ", ProviderProtocols.All)}。");
+                throw new AiToolsConfigurationException($"不支持的服务商协议：{provider.Protocol}。可用协议：{string.Join(", ", ProviderProtocols.All)}。");
         }
     }
 

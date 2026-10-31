@@ -4,19 +4,19 @@ using System.Threading;
 using System.Threading.Tasks;
 using AiTools.Abstractions;
 
-namespace AiTools.Wpf.Configuration;
+namespace AiTools.Configuration;
 
-/// <summary>当 AiTools.Wpf 无法完成某项操作时抛出。</summary>
-public sealed class AiToolsWpfException : Exception
+/// <summary>当 AiTools 的宿主配置无法完成某项操作时抛出。</summary>
+public class AiToolsConfigurationException : Exception
 {
     /// <summary>使用消息文本创建异常。</summary>
-    public AiToolsWpfException(string message)
+    public AiToolsConfigurationException(string message)
         : base(message)
     {
     }
 
     /// <summary>使用消息文本和内部异常创建异常。</summary>
-    public AiToolsWpfException(string message, Exception? innerException)
+    public AiToolsConfigurationException(string message, Exception? innerException)
         : base(message, innerException)
     {
     }
@@ -30,7 +30,7 @@ public interface IProviderFactory
 {
     /// <summary>为给定的服务商配置创建 chat 客户端。</summary>
     /// <param name="provider">服务商配置，包含已解密的 API Key。</param>
-    /// <exception cref="AiToolsWpfException">服务商配置不完整或不受支持。</exception>
+    /// <exception cref="AiToolsConfigurationException">服务商配置不完整或不受支持。</exception>
     IChatClient CreateChatClient(ProviderConfig provider);
 }
 
@@ -42,7 +42,7 @@ public interface IProviderModelCatalogFactory
 {
     /// <summary>为给定的服务商配置创建模型列表客户端。</summary>
     /// <param name="provider">服务商配置，包含已解密的 API Key。</param>
-    /// <exception cref="AiToolsWpfException">服务商配置不完整或不受支持。</exception>
+    /// <exception cref="AiToolsConfigurationException">服务商配置不完整或不受支持。</exception>
     IModelCatalog CreateModelCatalog(ProviderConfig provider);
 }
 

@@ -4,7 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AiTools.Abstractions;
 using AiTools.Skills;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 
 namespace AiTools.Wpf.Skills;
 

@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using AiTools.Core.Sessions;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 
 namespace AiTools.Wpf;
 

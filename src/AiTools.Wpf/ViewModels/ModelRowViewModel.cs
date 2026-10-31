@@ -1,6 +1,6 @@
 using System;
 using System.ComponentModel;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.Mvvm;
 
 namespace AiTools.Wpf.ViewModels;

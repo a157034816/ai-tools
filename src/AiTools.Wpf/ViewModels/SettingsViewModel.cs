@@ -7,7 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AiTools.Abstractions;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.Mvvm;
 
 namespace AiTools.Wpf.ViewModels;
@@ -356,7 +356,7 @@ public sealed class SettingsViewModel : ObservableObject
                 _selectedProviderId = latest.SelectedProviderId;
                 _selectedModelId = latest.SelectedModelId;
             }
-            catch (AiToolsWpfException)
+            catch (AiToolsConfigurationException)
             {
                 // 读取失败时沿用载入时的选择。
             }
@@ -374,7 +374,7 @@ public sealed class SettingsViewModel : ObservableObject
             PendingDelete = null;
             SettingsSaved?.Invoke(this, EventArgs.Empty);
         }
-        catch (AiToolsWpfException ex)
+        catch (AiToolsConfigurationException ex)
         {
             SetStatus("保存失败：" + ex.Message);
         }
@@ -406,7 +406,7 @@ public sealed class SettingsViewModel : ObservableObject
                 ? "尚未保存过设置，请添加服务商并填写 API Key。"
                 : "已载入设置。");
         }
-        catch (AiToolsWpfException ex)
+        catch (AiToolsConfigurationException ex)
         {
             SetStatus("载入设置失败：" + ex.Message);
         }
@@ -649,7 +649,7 @@ public sealed class SettingsViewModel : ObservableObject
         {
             editor.SetTestStatus(ConnectionTestState.Failed, "连接超时（20 秒），请检查 Base URL 与网络。");
         }
-        catch (AiToolsWpfException ex)
+        catch (AiToolsConfigurationException ex)
         {
             editor.SetTestStatus(ConnectionTestState.Failed, "连接失败：" + ex.Message);
         }
@@ -712,7 +712,7 @@ public sealed class SettingsViewModel : ObservableObject
             editor.SetModelFetchStatus(ConnectionTestState.Failed, "获取模型列表超时（20 秒），请检查 Base URL 与网络。");
             editor.IsModelPickerOpen = true;
         }
-        catch (AiToolsWpfException ex)
+        catch (AiToolsConfigurationException ex)
         {
             editor.SetModelFetchStatus(ConnectionTestState.Failed, "获取失败：" + ex.Message);
             editor.IsModelPickerOpen = true;
@@ -1008,7 +1008,7 @@ public sealed class SettingsViewModel : ObservableObject
                 ? AiToolsWpf.ProviderDescriptors
                 : ProviderDescriptor.BuiltIns;
         }
-        catch (AiToolsWpfException)
+        catch (AiToolsConfigurationException)
         {
             descriptors = ProviderDescriptor.BuiltIns;
         }
@@ -1034,7 +1034,7 @@ public sealed class SettingsViewModel : ObservableObject
         {
             return AiToolsWpf.IsInitialized ? AiToolsWpf.Options.DefaultSystemPrompt ?? string.Empty : string.Empty;
         }
-        catch (AiToolsWpfException)
+        catch (AiToolsConfigurationException)
         {
             return string.Empty;
         }

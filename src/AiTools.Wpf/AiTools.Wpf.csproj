@@ -11,16 +11,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\AiTools.Configuration\AiTools.Configuration.csproj" />
     <ProjectReference Include="..\AiTools.Core\AiTools.Core.csproj" />
     <ProjectReference Include="..\AiTools.OpenAI\AiTools.OpenAI.csproj" />
     <ProjectReference Include="..\AiTools.Anthropic\AiTools.Anthropic.csproj" />
     <ProjectReference Include="..\AiTools.Gemini\AiTools.Gemini.csproj" />
     <ProjectReference Include="..\AiTools.Skills\AiTools.Skills.csproj" />
     <ProjectReference Include="..\AiTools.Extensions\AiTools.Extensions.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

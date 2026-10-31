@@ -1,11 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace AiTools.Wpf.Configuration;
+namespace AiTools.Configuration;
 
 /// <summary>
 /// 默认设置存储，将 JSON 写入 <c>~/.ai-tools/settings.json</c>（或指定的路径），
@@ -25,12 +27,15 @@ public sealed class JsonFileSettingsStore : ISettingsStore
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>在默认位置（<c>~/.ai-tools/settings.json</c>）创建存储。</summary>
+    /// <param name="protector">密钥保护器。</param>
     public JsonFileSettingsStore(ISecretProtector protector)
         : this(AiTools.Core.AiToolsPaths.GetSettingsFile(), protector)
     {
     }
 
     /// <summary>在指定的文件路径创建存储。</summary>
+    /// <param name="filePath">设置文件路径。</param>
+    /// <param name="protector">密钥保护器。</param>
     public JsonFileSettingsStore(string filePath, ISecretProtector protector)
     {
         _filePath = filePath ?? throw new ArgumentNullException(nameof(filePath));
@@ -54,11 +59,11 @@ public sealed class JsonFileSettingsStore : ISettingsStore
             string json;
             try
             {
-                json = await File.ReadAllTextAsync(_filePath, cancellationToken).ConfigureAwait(false);
+                json = await ReadAllTextAsync(_filePath, cancellationToken).ConfigureAwait(false);
             }
             catch (IOException ex)
             {
-                throw new AiToolsWpfException($"无法读取设置文件：{_filePath}", ex);
+                throw new AiToolsConfigurationException($"无法读取设置文件：{_filePath}", ex);
             }
 
             AppSettings? settings;
@@ -68,7 +73,7 @@ public sealed class JsonFileSettingsStore : ISettingsStore
             }
             catch (JsonException ex)
             {
-                throw new AiToolsWpfException($"设置文件格式无效：{_filePath}", ex);
+                throw new AiToolsConfigurationException($"设置文件格式无效：{_filePath}", ex);
             }
 
             if (settings == null)
@@ -76,8 +81,14 @@ public sealed class JsonFileSettingsStore : ISettingsStore
                 return new AppSettings();
             }
 
+            if (settings.Providers == null)
+            {
+                settings.Providers = new List<ProviderConfig>();
+            }
+
             foreach (var provider in settings.Providers)
             {
+                provider.Models ??= new List<ModelConfig>();
                 provider.ApiKey = _protector.Unprotect(provider.ApiKey);
             }
 
@@ -114,7 +125,7 @@ public sealed class JsonFileSettingsStore : ISettingsStore
 
             var json = JsonSerializer.Serialize(snapshot, SerializerOptions);
             var tempPath = _filePath + ".tmp";
-            await File.WriteAllTextAsync(tempPath, json, cancellationToken).ConfigureAwait(false);
+            await WriteAllTextAsync(tempPath, json, cancellationToken).ConfigureAwait(false);
 
             // 原子替换，避免写入中途崩溃导致设置文件损坏。
             if (File.Exists(_filePath))
@@ -128,11 +139,32 @@ public sealed class JsonFileSettingsStore : ISettingsStore
         }
         catch (IOException ex)
         {
-            throw new AiToolsWpfException($"无法保存设置文件：{_filePath}", ex);
+            throw new AiToolsConfigurationException($"无法保存设置文件：{_filePath}", ex);
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private static async Task<string> ReadAllTextAsync(string path, CancellationToken cancellationToken)
+    {
+        using (var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+        {
+            var text = await reader.ReadToEndAsync().ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return text;
+        }
+    }
+
+    private static async Task WriteAllTextAsync(string path, string content, CancellationToken cancellationToken)
+    {
+        using (var writer = new StreamWriter(path, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+        {
+            await writer.WriteAsync(content).ConfigureAwait(false);
+            await writer.FlushAsync().ConfigureAwait(false);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
     }
 }

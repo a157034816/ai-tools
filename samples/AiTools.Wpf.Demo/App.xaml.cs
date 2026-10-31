@@ -6,7 +6,7 @@ using AiTools.Core;
 using AiTools.Core.Sessions;
 using AiTools.Skills;
 using AiTools.Wpf;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.Skills;
 
 namespace AiTools.Wpf.Demo;

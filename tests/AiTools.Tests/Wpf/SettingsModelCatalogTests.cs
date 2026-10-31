@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AiTools.Abstractions;
 using AiTools.Wpf;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.ViewModels;
 using Xunit;
 
@@ -295,7 +295,7 @@ public sealed class SettingsModelCatalogTests : IDisposable
     {
         var factory = new BuiltInProviderFactory();
 
-        Assert.Throws<AiToolsWpfException>(() => factory.CreateModelCatalog(new ProviderConfig
+        Assert.Throws<AiToolsConfigurationException>(() => factory.CreateModelCatalog(new ProviderConfig
         {
             Protocol = "unknown",
             BaseUrl = "https://x",

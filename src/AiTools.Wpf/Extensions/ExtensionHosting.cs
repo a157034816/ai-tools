@@ -7,7 +7,7 @@ using System.Windows;
 using AiTools.Abstractions;
 using AiTools.Core.Http;
 using AiTools.Extensions;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 
 namespace AiTools.Wpf.Extensions;
 

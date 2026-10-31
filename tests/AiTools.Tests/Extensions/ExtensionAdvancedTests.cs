@@ -6,7 +6,7 @@ using AiTools.Core.Sse;
 using AiTools.Extensions;
 using AiTools.OpenAI;
 using AiTools.Wpf;
-using AiTools.Wpf.Configuration;
+using AiTools.Configuration;
 using AiTools.Wpf.Extensions;
 using Xunit;
 

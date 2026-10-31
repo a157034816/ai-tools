@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace AiTools.Wpf.Configuration;
+namespace AiTools.Configuration;
 
 /// <summary>
 /// 描述宿主可在设置页展示的服务商模板。
@@ -27,7 +27,13 @@ public sealed class ProviderDescriptor
     /// <summary>在设置页中显示的可选描述。</summary>
     public string? Description { get; init; }
 
-    /// <summary>默认的服务商模板。宿主可通过 <see cref="AiToolsWpfOptions.Providers"/> 替换此列表。</summary>
+    /// <summary>
+    /// 读取 API Key 的环境变量名。CLI 等非交互宿主在配置缺失时用它兜底；
+    /// 为空表示该模板没有约定环境变量。
+    /// </summary>
+    public string? ApiKeyEnvironmentVariable { get; init; }
+
+    /// <summary>默认的服务商模板。宿主可通过自己的选项替换此列表。</summary>
     public static IReadOnlyList<ProviderDescriptor> BuiltIns { get; } = new ProviderDescriptor[]
     {
         new()
@@ -37,7 +43,8 @@ public sealed class ProviderDescriptor
             Protocol = ProviderProtocols.OpenAi,
             DefaultBaseUrl = "https://api.openai.com/v1",
             DefaultModels = new[] { "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "o3" },
-            Description = "OpenAI 官方 API"
+            Description = "OpenAI 官方 API",
+            ApiKeyEnvironmentVariable = "OPENAI_API_KEY"
         },
         new()
         {
@@ -46,7 +53,8 @@ public sealed class ProviderDescriptor
             Protocol = ProviderProtocols.Anthropic,
             DefaultBaseUrl = "https://api.anthropic.com/v1",
             DefaultModels = new[] { "claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5" },
-            Description = "Claude Messages API"
+            Description = "Claude Messages API",
+            ApiKeyEnvironmentVariable = "ANTHROPIC_API_KEY"
         },
         new()
         {
@@ -55,7 +63,8 @@ public sealed class ProviderDescriptor
             Protocol = ProviderProtocols.Gemini,
             DefaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta",
             DefaultModels = new[] { "gemini-2.5-flash", "gemini-2.5-pro" },
-            Description = "Google Gemini API"
+            Description = "Google Gemini API",
+            ApiKeyEnvironmentVariable = "GEMINI_API_KEY"
         },
         new()
         {
@@ -64,7 +73,8 @@ public sealed class ProviderDescriptor
             Protocol = ProviderProtocols.OpenAi,
             DefaultBaseUrl = "https://api.deepseek.com/v1",
             DefaultModels = new[] { "deepseek-chat", "deepseek-reasoner" },
-            Description = "OpenAI 兼容端点，支持 reasoning_content"
+            Description = "OpenAI 兼容端点，支持 reasoning_content",
+            ApiKeyEnvironmentVariable = "DEEPSEEK_API_KEY"
         },
         new()
         {
@@ -73,7 +83,8 @@ public sealed class ProviderDescriptor
             Protocol = ProviderProtocols.OpenAi,
             DefaultBaseUrl = "https://api.moonshot.cn/v1",
             DefaultModels = new[] { "kimi-k2-0711-preview", "moonshot-v1-8k" },
-            Description = "OpenAI 兼容端点"
+            Description = "OpenAI 兼容端点",
+            ApiKeyEnvironmentVariable = "MOONSHOT_API_KEY"
         },
         new()
         {
@@ -82,7 +93,8 @@ public sealed class ProviderDescriptor
             Protocol = ProviderProtocols.OpenAi,
             DefaultBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
             DefaultModels = new[] { "qwen-max", "qwen-plus", "qwen-turbo" },
-            Description = "DashScope OpenAI 兼容模式"
+            Description = "DashScope OpenAI 兼容模式",
+            ApiKeyEnvironmentVariable = "DASHSCOPE_API_KEY"
         },
         new()
         {
