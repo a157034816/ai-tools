@@ -8,10 +8,14 @@ AiTools.Core           ← HTTP、SSE/NDJSON、重试、错误映射、流式聚
 ┌───────┴────────┬───────────────┬─────────────┬────────────┐
 AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
                                                     ▲
-                    AiTools.Skills ──► AiTools.Extensions ──► AiTools.Wpf
-                                             ▲
-                              AiTools.Extensions.Scripting   （net8.0 专用，可选）
+                    AiTools.Skills ──► AiTools.Extensions ──► AiTools.Configuration
+                                             ▲                    ▲       ▲
+                              AiTools.Extensions.Scripting   AiTools.Wpf  AiTools.Terminal
+                                      （net8.0 专用，可选）
 ```
+
+设置模型与 JSON 存储放在 `AiTools.Configuration`，WPF 与终端宿主共用同一份
+`~/.ai-tools/settings.json`；两个宿主都不依赖对方。
 
 依赖方向严格单向：Provider 依赖 Core，Core 依赖 Abstractions，Abstractions 不依赖任何项目。
 
@@ -85,6 +89,31 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 - **传输层** `IMcpTransport`：JSON-RPC 2.0 消息收发。实现 `StdioMcpTransport`（子进程 + 换行分隔 JSON）、`StreamableHttpMcpTransport`（POST + SSE 响应流、`Mcp-Session-Id`）、`SseMcpTransport`（GET 事件流 + POST 消息端点）。
 - **协议层** `McpClient`：`initialize` 握手、`tools/list|call`、`resources/list|read|templates`、`prompts/list|get`、`ping`、`logging/setLevel`、进度通知。
 - **桥接层** `McpToolBridge`：把 MCP 工具转换为 `ToolDefinition` 与 `CompleteWithToolsAsync` 所需的处理器，名称做合规化并维护反查表。
+
+### AiTools.Configuration
+
+| 文件 | 内容 |
+|---|---|
+| `Models.cs` | `ProviderProtocols`、`ModelConfig`、`ProviderConfig`、`AppSettings` |
+| `Interfaces.cs` | `ISettingsStore`、`ISecretProtector`、`IProviderFactory`、`IProviderModelCatalogFactory`、`IChatToolProvider`、`AiToolsConfigurationException` |
+| `JsonFileSettingsStore.cs` | `~/.ai-tools/settings.json` 原子写入与读取 |
+| `DpapiSecretProtector.cs` | Windows DPAPI 密钥保护；非 Windows 退化为明文并明确文档化 |
+| `ProviderDescriptor.cs` | 服务商模板与 `*_API_KEY` 环境变量约定 |
+| `BuiltInProviderFactory.cs` | 配置 → OpenAI / Anthropic / Gemini 客户端与模型列表客户端 |
+
+### AiTools.Terminal
+
+| 目录 | 内容 |
+|---|---|
+| `Agent/AgentSession.cs` | 与界面无关的会话编排：插件/扩展/技能加载、请求拼装、工具循环、权限、持久化 |
+| `Agent/TerminalOptions.cs` | 与 `AiToolsWpfOptions` 对应的跨平台选项 |
+| `Agent/TerminalExtensionUi.cs` | 扩展 UI 接缝 → 终端浮层 |
+| `Rendering/` | 显示宽度、样式与 SGR、虚拟屏幕与行级 diff |
+| `Input/TerminalKey.cs` | 纯函数式按键解析（CSI/SS3、括号粘贴、Alt 组合） |
+| `ConsoleTerminalHost.cs` | 备用屏幕、VT 输入模式（Windows）/ `stty raw`（Unix） |
+| `MarkdownRenderer.cs` | 面向终端的 Markdown 子集渲染 |
+| `Views/` | 记录区模型与渲染缓存、行编辑器、浮层 |
+| `TerminalApp.cs` | 主循环：按键 → 状态更新 → 重绘 |
 
 ### AiTools.Extensions
 

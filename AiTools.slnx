@@ -6,11 +6,13 @@
     <Project Path="samples/AiTools.Samples.McpDiscovery/AiTools.Samples.McpDiscovery.csproj" />
     <Project Path="samples/AiTools.Samples.McpExplorer/AiTools.Samples.McpExplorer.csproj" />
     <Project Path="samples/AiTools.Samples.McpToolServer/AiTools.Samples.McpToolServer.csproj" />
+    <Project Path="samples/AiTools.Cli/AiTools.Cli.csproj" />
     <Project Path="samples/AiTools.Wpf.Demo/AiTools.Wpf.Demo.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/AiTools.Abstractions/AiTools.Abstractions.csproj" />
     <Project Path="src/AiTools.Anthropic/AiTools.Anthropic.csproj" />
+    <Project Path="src/AiTools.Configuration/AiTools.Configuration.csproj" />
     <Project Path="src/AiTools.Core/AiTools.Core.csproj" />
     <Project Path="src/AiTools.Extensions/AiTools.Extensions.csproj" />
     <Project Path="src/AiTools.Extensions.Scripting/AiTools.Extensions.Scripting.csproj" />
@@ -18,6 +20,7 @@
     <Project Path="src/AiTools.Mcp/AiTools.Mcp.csproj" />
     <Project Path="src/AiTools.OpenAI/AiTools.OpenAI.csproj" />
     <Project Path="src/AiTools.Skills/AiTools.Skills.csproj" />
+    <Project Path="src/AiTools.Terminal/AiTools.Terminal.csproj" />
     <Project Path="src/AiTools.Wpf/AiTools.Wpf.csproj" />
   </Folder>
   <Folder Name="/tests/">

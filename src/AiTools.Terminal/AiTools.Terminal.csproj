@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>AiTools.Terminal</RootNamespace>
+    <AssemblyName>AiTools.Terminal</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>Full-screen terminal UI for AiTools agents: ANSI rendering, transcript view, prompt input, slash-command palette and extension UI bridge.</Description>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiTools.Abstractions\AiTools.Abstractions.csproj" />
+    <ProjectReference Include="..\AiTools.Configuration\AiTools.Configuration.csproj" />
+    <ProjectReference Include="..\AiTools.Core\AiTools.Core.csproj" />
+    <ProjectReference Include="..\AiTools.Extensions\AiTools.Extensions.csproj" />
+    <ProjectReference Include="..\AiTools.Extensions.Scripting\AiTools.Extensions.Scripting.csproj" />
+    <ProjectReference Include="..\AiTools.Mcp\AiTools.Mcp.csproj" />
+    <ProjectReference Include="..\AiTools.Skills\AiTools.Skills.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AiTools.Tests" />
+  </ItemGroup>
+
+</Project>
