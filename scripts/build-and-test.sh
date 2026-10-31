@@ -16,4 +16,9 @@ dotnet test tests/AiTools.Tests/AiTools.Tests.csproj -c Release --no-build
 echo "==> 示例程序编译"
 dotnet build samples/AiTools.Samples.Console/AiTools.Samples.Console.csproj -c Release --no-restore
 
+echo "==> CLI 冒烟（--help / --version / --list-models）"
+dotnet samples/AiTools.Cli/bin/Release/net8.0/aitools.dll --help > /dev/null
+dotnet samples/AiTools.Cli/bin/Release/net8.0/aitools.dll --version
+AITOOLS_HOME="${AITOOLS_HOME:-$(mktemp -d)}" dotnet samples/AiTools.Cli/bin/Release/net8.0/aitools.dll --list-models || true
+
 echo "全部通过。"

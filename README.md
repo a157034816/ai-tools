@@ -46,6 +46,8 @@ Console.WriteLine(response.GetText());
 | `AiTools.Skills` | Agent Skills：技能发现、渐进式披露与模型可调用的技能加载工具；含共享 `.agents`（Pi / Codex 通用）与 `AGENTS.md` 发现 |
 | `AiTools.Extensions` | Extensions：可编程扩展运行时（命令/工具/事件/会话状态/输出风格/权限/工作流）+ 磁盘扩展包子系统（`extension.json`、构建、热重载、Git 源码）+ 兼容 Claude Code 的插件加载 |
 | `AiTools.Extensions.Scripting` | 可选、仅 `net8.0`：JS/TS 扩展包宿主（Jint 引擎 + 内置 TypeScript strip-and-rewrite 转译），通过 `IScriptExtensionProvider` 接缝注入；依赖 `AiTools.Extensions`，反向不成立 |
+| `AiTools.Configuration` | 跨平台共享配置：设置模型、JSON 存储（原子写入 + 密钥保护）、服务商模板与工厂 |
+| `AiTools.Terminal` | 官方终端 Agent：全屏 TUI、Markdown 渲染、浮层交互与 `AgentSession` 编排 |
 | `AiTools.Wpf` | 可复用 WPF 组件：设置页（供应商/模型配置）+ 对话页，宿主通过全局配置与接口注册 |
 
 典型引用方式：引用所选 Provider + `AiTools.Abstractions`（`Core` 会作为传递依赖自动引入）。
@@ -229,6 +231,46 @@ var transcript = await client.Audio.TranscribeAsync(new TranscriptionRequest
     Language = "zh"
 });
 ```
+
+## 官方终端 Agent（AiTools.Terminal）
+
+`aitools` 是一套完整的主循环：流式 Markdown 渲染、工具调用卡片、斜杠命令面板、
+提问/权限确认浮层、会话恢复与分叉，全部跑在终端里，零第三方 UI 依赖。
+
+```bash
+dotnet run --project samples/AiTools.Cli          # 全屏 TUI
+dotnet run --project samples/AiTools.Cli -- --list-models
+dotnet run --project samples/AiTools.Cli -- -p "总结这个仓库的构建方式"   # 一次性输出
+```
+
+```csharp
+// 也可以把会话嵌进自己的宿主
+await using var session = new AiTools.Terminal.Agent.AgentSession(new TerminalOptions
+{
+    ProviderId = "anthropic",
+    ModelId = "claude-sonnet-4-5"
+});
+
+session.Updates += update =>
+{
+    if (update.Kind == AgentUpdateKind.TextDelta) Console.Write(update.Text);
+};
+
+await session.InitializeAsync();
+await session.SubmitAsync("帮我找出未处理的 TODO");
+```
+
+- 配置与服务商模板来自 `AiTools.Configuration`，与 WPF 设置页共用 `~/.ai-tools/settings.json`；
+  没有设置文件时按 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` 自动兜底。
+- 技能、插件、扩展包、MCP、权限策略、虚拟模型与输出风格全部沿用 `AiTools.Extensions` 的语义。
+- 终端不支持 ANSI（或输出被重定向）时自动退化为行式 REPL；`--plain` 可在 IDE 内嵌终端中使用。
+- 渲染实现：虚拟屏幕 + 行级 diff、东亚宽度感知的换行与截断、纯函数式按键解析。
+
+```bash
+dotnet test tests/AiTools.Tests/AiTools.Tests.csproj --filter "FullyQualifiedName~Terminal"
+```
+
+详见 [`docs/TERMINAL.md`](docs/TERMINAL.md)。
 
 ## WPF 预制组件（AiTools.Wpf）
 
@@ -481,6 +523,7 @@ var full = await client.Chat.StreamAsync(request).AggregateAsync();
 ```bash
 dotnet build AiTools.slnx
 dotnet test tests/AiTools.Tests/AiTools.Tests.csproj
+dotnet run --project samples/AiTools.Cli                        # 官方终端 Agent
 dotnet run --project samples/AiTools.Samples.Console            # 全部演示
 dotnet run --project samples/AiTools.Samples.Console -- offline # 无需 API Key
 ```
@@ -506,9 +549,11 @@ src/
   AiTools.Mcp/            MCP 客户端（stdio / Streamable HTTP / HTTP+SSE）
   AiTools.Skills/         Agent Skills（技能发现 + 渐进式披露）
   AiTools.Extensions/     可编程扩展运行时 + Claude Code 插件加载
+  AiTools.Configuration/  跨平台设置模型、JSON 存储、密钥保护与服务商工厂
+  AiTools.Terminal/       官方终端 Agent（全屏 TUI + AgentSession）
   AiTools.Wpf/            WPF 设置页与对话页
 tests/
-  AiTools.Tests/          466 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
+  AiTools.Tests/          699 个单元与集成测试（假 HTTP 处理器 + 真实进程端到端）
 samples/
   AiTools.Samples.Console/        可运行的演示程序
   AiTools.Samples.McpDiscovery/   本机 MCP 服务注册表（共享）
@@ -517,6 +562,7 @@ samples/
   AiTools.Samples.McpAgents/      多 agent MCP 配置管理共享库
   AiTools.Samples.McpAgentManager/ 多 agent MCP 管理器示例（WPF）
   AiTools.Wpf.Demo/               WPF 组件演示（含示例技能）
+  AiTools.Cli/                    官方 CLI（命令名 aitools）
 docs/
   ARCHITECTURE.md         分层设计
   CAPABILITY_MATRIX.md    各厂商能力对比
@@ -528,6 +574,7 @@ docs/
   EXTENSIONS_AUTHORING.md 扩展包编写指南（C#/JS/TS、构建、热重载、发布、调试）
   SESSIONS.md             会话恢复与分叉指南
   MCP_AGENT_MANAGER.md    多 agent MCP 管理器说明
+  TERMINAL.md             官方终端 Agent（全屏 TUI）指南
 ```
 
 ## 许可证
