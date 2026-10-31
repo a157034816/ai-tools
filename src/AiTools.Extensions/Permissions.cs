@@ -199,6 +199,22 @@ public sealed class PermissionPolicy
     }
 }
 
+/// <summary>
+/// 扩展对一次 <see cref="PermissionDecision.Ask"/> 的接管结果。由
+/// <see cref="ExtensionEvent.PermissionRequest"/> 的处理器给出，宿主据此跳过或改写用户确认。
+/// </summary>
+public sealed class PermissionResolution
+{
+    /// <summary>获取结论；<see cref="PermissionDecision.Ask"/> 表示交回宿主询问用户。</summary>
+    public PermissionDecision Decision { get; init; } = PermissionDecision.Ask;
+
+    /// <summary>获取原因说明；拒绝时写入工具结果。</summary>
+    public string? Reason { get; init; }
+
+    /// <summary>获取展示给用户的提示文本；null 使用宿主默认文案。</summary>
+    public string? Prompt { get; init; }
+}
+
 /// <summary>项目信任决策的结果。</summary>
 public sealed class TrustDecision
 {
@@ -361,6 +377,35 @@ public static class PermissionGate
         string argumentsJson,
         Func<Task<string>> execute,
         Func<string, Task<bool>>? confirm)
+        => await GuardAsync(
+            policy,
+            toolName,
+            argumentsJson,
+            execute,
+            confirm,
+            resolveAsync: null).ConfigureAwait(false);
+
+    /// <summary>
+    /// 按策略守卫一次工具调用，并允许在 <see cref="PermissionDecision.Ask"/> 之前由扩展先行判定。
+    /// </summary>
+    /// <param name="policy">策略；为 null 时使用 <see cref="PermissionPolicy.Default"/>。</param>
+    /// <param name="toolName">工具名。</param>
+    /// <param name="argumentsJson">参数 JSON。</param>
+    /// <param name="execute">实际执行体。</param>
+    /// <param name="confirm">用户确认回调，参数为提示文本；为 null 时未被扩展改写的 <see cref="PermissionDecision.Ask"/> 一律拒绝。</param>
+    /// <param name="resolveAsync">
+    /// 扩展判定回调（对应 <see cref="ExtensionEvent.PermissionRequest"/>）。返回 null 表示不接管；
+    /// 返回的结论为 Allow / Deny 时跳过用户确认，为 Ask 时继续走 <paramref name="confirm"/>。
+    /// 回调抛异常时按拒绝处理（fail-closed）。
+    /// </param>
+    /// <returns>工具结果，或拒绝时的错误 JSON。</returns>
+    public static async Task<string> GuardAsync(
+        PermissionPolicy policy,
+        string toolName,
+        string argumentsJson,
+        Func<Task<string>> execute,
+        Func<string, Task<bool>>? confirm,
+        Func<string, Task<PermissionResolution?>>? resolveAsync)
     {
         if (execute == null)
         {
@@ -369,24 +414,45 @@ public static class PermissionGate
 
         policy ??= PermissionPolicy.Default;
         var decision = policy.Evaluate(toolName, argumentsJson, out var rule);
+
+        string? reason = null;
+        string? prompt = null;
+        if (decision == PermissionDecision.Ask && resolveAsync != null)
+        {
+            try
+            {
+                var resolution = await resolveAsync(toolName).ConfigureAwait(false);
+                if (resolution != null)
+                {
+                    decision = resolution.Decision;
+                    reason = resolution.Reason;
+                    prompt = resolution.Prompt;
+                }
+            }
+            catch (Exception)
+            {
+                // 扩展判定失败时保持宿主默认的 Ask 流程，由 confirm 决定；没有 confirm 即拒绝。
+            }
+        }
+
         switch (decision)
         {
             case PermissionDecision.Allow:
                 return await execute().ConfigureAwait(false);
 
             case PermissionDecision.Deny:
-                return ErrorJson("denied", Describe(toolName, rule, "is denied by"));
+                return ErrorJson("denied", reason ?? Describe(toolName, rule, "is denied by"));
 
             default:
                 if (confirm == null)
                 {
-                    return ErrorJson("not approved", Describe(toolName, rule, "requires approval from"));
+                    return ErrorJson("not approved", reason ?? Describe(toolName, rule, "requires approval from"));
                 }
 
                 bool approved;
                 try
                 {
-                    approved = await confirm(BuildPrompt(toolName, argumentsJson)).ConfigureAwait(false);
+                    approved = await confirm(prompt ?? BuildPrompt(toolName, argumentsJson)).ConfigureAwait(false);
                 }
                 catch (Exception)
                 {
@@ -395,7 +461,7 @@ public static class PermissionGate
 
                 return approved
                     ? await execute().ConfigureAwait(false)
-                    : ErrorJson("not approved", Describe(toolName, rule, "was not approved by"));
+                    : ErrorJson("not approved", reason ?? Describe(toolName, rule, "was not approved by"));
         }
     }
 
@@ -483,6 +549,12 @@ public sealed class AccessControl
     /// <param name="argumentsJson">参数 JSON。</param>
     /// <param name="execute">实际执行体。</param>
     /// <param name="confirm">用户确认回调。</param>
-    public Task<string> GuardAsync(string toolName, string argumentsJson, Func<Task<string>> execute, Func<string, Task<bool>>? confirm)
-        => PermissionGate.GuardAsync(Policy, toolName, argumentsJson, execute, confirm);
+    /// <param name="resolveAsync">扩展判定回调；返回 null 表示不接管。</param>
+    public Task<string> GuardAsync(
+        string toolName,
+        string argumentsJson,
+        Func<Task<string>> execute,
+        Func<string, Task<bool>>? confirm,
+        Func<string, Task<PermissionResolution?>>? resolveAsync = null)
+        => PermissionGate.GuardAsync(Policy, toolName, argumentsJson, execute, confirm, resolveAsync);
 }

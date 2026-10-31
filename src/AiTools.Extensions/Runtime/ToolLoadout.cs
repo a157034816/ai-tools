@@ -80,7 +80,7 @@ public sealed class ToolLoadout
     /// <summary>获取或设置声明给模型的工具（已应用描述替换并去掉隐藏声明）。</summary>
     public IReadOnlyList<ExtensionTool> Declared { get; set; } = Array.Empty<ExtensionTool>();
 
-    /// <summary>获取或设置可被 <see cref="ExtensionRuntime.ExecuteToolAsync(string, string, CommandContext, string?, System.Threading.CancellationToken)"/> 调用的工具。</summary>
+    /// <summary>获取或设置可被 <see cref="ExtensionRuntime.ExecuteToolAsync(string, string, CommandContext, string?, System.Threading.CancellationToken, Func{ToolExecutionEvent, Task}?)"/> 调用的工具。</summary>
     public IReadOnlyList<ExtensionTool> Callable { get; set; } = Array.Empty<ExtensionTool>();
 
     /// <summary>获取或设置全部已登记工具（含内置编排工具与不可达工具）。</summary>

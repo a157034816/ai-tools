@@ -44,6 +44,7 @@ public sealed class AgentSession : IAsyncDisposable
     private ConversationRecord? _conversation;
     private CancellationTokenSource? _turnCancellation;
     private string? _pendingContinuation;
+    private int _turnIndex;
     private bool _disposed;
 
     /// <summary>创建会话。</summary>
@@ -278,14 +279,29 @@ public sealed class AgentSession : IAsyncDisposable
     public async Task NewConversationAsync()
     {
         await PersistAsync().ConfigureAwait(false);
+        if (_pipeline != null)
+        {
+            var cancelled = await _pipeline.Session
+                .PublishBeforeSwitchAsync("new", null)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(cancelled))
+            {
+                SetStatus(cancelled);
+                return;
+            }
+        }
+
+        var previousId = _conversation?.Id;
         lock (_history)
         {
             _history.Clear();
         }
 
         _conversation = null;
+        _turnIndex = 0;
         _pipeline?.Runtime.State.ClearAll();
         _pipeline?.Session.UpdateSessionId(null);
+        await PublishSwitchedAsync("new", previousId).ConfigureAwait(false);
         Title = "新对话";
         SetStatus("已开始新对话");
         RaiseStateChanged();
@@ -308,7 +324,22 @@ public sealed class AgentSession : IAsyncDisposable
         }
 
         await PersistAsync().ConfigureAwait(false);
+        if (_pipeline != null)
+        {
+            var cancelled = await _pipeline.Session
+                .PublishBeforeSwitchAsync("resume", record.Id, cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(cancelled))
+            {
+                Raise(new AgentUpdate { Kind = AgentUpdateKind.Notice, Text = cancelled, NoticeKind = NoticeKind.Warning });
+                return false;
+            }
+        }
+
+        var previousId = _conversation?.Id;
         ApplyConversation(record);
+        _turnIndex = 0;
+        await PublishSwitchedAsync("resume", previousId).ConfigureAwait(false);
         SetStatus($"已恢复「{record.Title}」（{record.Messages.Count} 条消息）");
         RaiseStateChanged();
         return true;
@@ -328,11 +359,32 @@ public sealed class AgentSession : IAsyncDisposable
         }
 
         var fork = await _options.ConversationStore!.ForkAsync(source, null, cancellationToken).ConfigureAwait(false);
+        if (_pipeline != null)
+        {
+            var cancelled = await _pipeline.Session
+                .PublishBeforeSwitchAsync("fork", fork.Id, cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(cancelled))
+            {
+                Raise(new AgentUpdate { Kind = AgentUpdateKind.Notice, Text = cancelled, NoticeKind = NoticeKind.Warning });
+                return false;
+            }
+        }
+
+        var previousId = _conversation?.Id;
         ApplyConversation(fork);
+        _turnIndex = 0;
+        await PublishSwitchedAsync("fork", previousId).ConfigureAwait(false);
         SetStatus($"已分叉为「{fork.Title}」");
         RaiseStateChanged();
         return true;
     }
+
+    /// <summary>会话替换后分发 <c>session_switched</c>；未配置扩展管道时是空操作。</summary>
+    private Task PublishSwitchedAsync(string reason, string? previousSessionId)
+        => _pipeline == null
+            ? Task.CompletedTask
+            : _pipeline.Session.PublishSwitchedAsync(reason, previousSessionId);
 
     /// <summary>删除一个已保存的对话。</summary>
     /// <param name="id">对话 ID。</param>
@@ -745,10 +797,16 @@ public sealed class AgentSession : IAsyncDisposable
         var textBuffer = new StringBuilder();
         var reasoningBuffer = new StringBuilder();
         var toolCallCount = 0;
+        var turnIndex = _turnIndex++;
 
         lock (_history)
         {
             _history.Add(new TranscriptMessage(ChatMessage.User(prompt), displayText));
+        }
+
+        if (_pipeline != null)
+        {
+            await _pipeline.PublishMessageEndAsync(CreateExtensionContext(), ChatRole.User, prompt, cancellationToken).ConfigureAwait(false);
         }
 
         IsBusy = true;
@@ -763,6 +821,12 @@ public sealed class AgentSession : IAsyncDisposable
             if (_pipeline != null && !_pipeline.Session.IsStarted)
             {
                 await _pipeline.StartAsync(_conversation?.Id, token).ConfigureAwait(false);
+            }
+
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentStartAsync(CreateExtensionContext(), model.Id, token).ConfigureAwait(false);
+                await _pipeline.PublishTurnStartAsync(CreateExtensionContext(), turnIndex, token).ConfigureAwait(false);
             }
 
             var tools = BuildToolRegistrations();
@@ -824,17 +888,13 @@ public sealed class AgentSession : IAsyncDisposable
             var sharedPrompt = SharedAgents?.BuildInstructionsPrompt();
             if (!string.IsNullOrWhiteSpace(sharedPrompt))
             {
-                systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
-                    ? sharedPrompt
-                    : systemPrompt!.TrimEnd() + "\n\n" + sharedPrompt;
+                systemPrompt = await MergeInstructionsAsync(systemPrompt, "agents", sharedPrompt!, token).ConfigureAwait(false);
             }
 
             var skillPrompt = _skillProvider?.Toolset.BuildSystemPrompt();
             if (!string.IsNullOrWhiteSpace(skillPrompt))
             {
-                systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
-                    ? skillPrompt
-                    : systemPrompt!.TrimEnd() + "\n\n" + skillPrompt;
+                systemPrompt = await MergeInstructionsAsync(systemPrompt, "skill", skillPrompt!, token).ConfigureAwait(false);
             }
 
             var toolArray = tools.Select(item => item.Definition).ToArray();
@@ -917,7 +977,19 @@ public sealed class AgentSession : IAsyncDisposable
                             SessionId = _conversation?.Id,
                             WorkingDirectory = WorkingDirectory,
                             Ui = _pipeline.Ui,
-                            EntryStore = _pipeline.Session.CreateContext(null, null).EntryStore
+                            EntryStore = _pipeline.Session.CreateContext(null, null).EntryStore,
+                            ReportProgress = async partial =>
+                                await _pipeline.Runtime.PublishAsync(
+                                    ExtensionEvent.ToolExecutionUpdate,
+                                    new ToolExecutionEvent
+                                    {
+                                        ToolName = call.Name,
+                                        ToolCallId = call.Id,
+                                        ArgumentsJson = call.ArgumentsJson,
+                                        PartialOutput = partial
+                                    },
+                                    CreateExtensionContext(),
+                                    toolToken).ConfigureAwait(false)
                         };
 
                         var toolResult = await _pipeline.Runtime
@@ -942,7 +1014,9 @@ public sealed class AgentSession : IAsyncDisposable
                                                 "确认工具调用",
                                                 promptText,
                                                 defaultValue: false,
-                                                cancellationToken: toolToken).ConfigureAwait(false));
+                                                cancellationToken: toolToken).ConfigureAwait(false),
+                        CreateExtensionContext(),
+                        toolToken);
 
                     result = guarded == null
                         ? await RunAsync().ConfigureAwait(false)
@@ -976,6 +1050,16 @@ public sealed class AgentSession : IAsyncDisposable
 
                     result = (transformed as ToolResultEvent ?? resultEvent).Text;
                     toolWatch.Stop();
+
+                    if (isError)
+                    {
+                        await _pipeline.PublishToolErrorAsync(
+                            CreateExtensionContext(),
+                            call.Name,
+                            result,
+                            call.Id,
+                            toolToken).ConfigureAwait(false);
+                    }
 
                     await _pipeline.Runtime.PublishAsync(
                         ExtensionEvent.ToolExecutionEnd,
@@ -1041,6 +1125,11 @@ public sealed class AgentSession : IAsyncDisposable
                 text = response.GetText();
             }
 
+            if (_pipeline != null && !string.IsNullOrWhiteSpace(text))
+            {
+                text = await _pipeline.PublishMessageEndAsync(CreateExtensionContext(), ChatRole.Assistant, text, token).ConfigureAwait(false);
+            }
+
             lock (_history)
             {
                 if (!string.IsNullOrWhiteSpace(text))
@@ -1056,7 +1145,8 @@ public sealed class AgentSession : IAsyncDisposable
                     CreateExtensionContext(),
                     text,
                     toolCallCount,
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None,
+                    turnIndex).ConfigureAwait(false);
             }
 
             if (turnEnd is { Continue: true, ContinuationPrompt: { Length: > 0 } continuation })
@@ -1089,6 +1179,11 @@ public sealed class AgentSession : IAsyncDisposable
                 ? "完成"
                 : $"完成 · {FormatUsage(response.Usage)} · {stopwatch.Elapsed.TotalSeconds:0.0}s");
             _ = started;
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentEndAsync(CreateExtensionContext(), CancellationToken.None).ConfigureAwait(false);
+            }
+
             return result;
         }
         catch (OperationCanceledException)
@@ -1096,6 +1191,17 @@ public sealed class AgentSession : IAsyncDisposable
             lock (_history)
             {
                 RemoveLastUserTurn();
+            }
+
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentFailedAsync(
+                    CreateExtensionContext(),
+                    "已停止生成。",
+                    cancelled: true,
+                    textBuffer.ToString(),
+                    toolCallCount,
+                    CancellationToken.None).ConfigureAwait(false);
             }
 
             stopwatch.Stop();
@@ -1132,6 +1238,17 @@ public sealed class AgentSession : IAsyncDisposable
 
             stopwatch.Stop();
             var message = DescribeServiceException(ex);
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentFailedAsync(
+                    CreateExtensionContext(),
+                    message,
+                    cancelled: false,
+                    textBuffer.ToString(),
+                    toolCallCount,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
             Raise(new AgentUpdate
             {
                 Kind = AgentUpdateKind.TurnFailed,
@@ -1156,6 +1273,17 @@ public sealed class AgentSession : IAsyncDisposable
             }
 
             stopwatch.Stop();
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentFailedAsync(
+                    CreateExtensionContext(),
+                    ex.Message,
+                    cancelled: false,
+                    textBuffer.ToString(),
+                    toolCallCount,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
             Raise(new AgentUpdate
             {
                 Kind = AgentUpdateKind.TurnFailed,
@@ -1190,6 +1318,49 @@ public sealed class AgentSession : IAsyncDisposable
             Duration = duration,
             IsError = isError
         });
+
+    /// <summary>
+    /// 把一段宿主指令（<c>.agents</c> 共享指令、技能清单）经 <c>instructions_loaded</c> 并入系统提示，
+    /// 让扩展可以改写或丢弃条目。扩展全部丢弃时返回原提示。
+    /// </summary>
+    private async Task<string> MergeInstructionsAsync(
+        string? systemPrompt,
+        string source,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var incoming = text;
+        if (_pipeline != null)
+        {
+            try
+            {
+                var sections = new List<InstructionsSection>
+                {
+                    new() { Source = source, Text = text }
+                };
+                incoming = await _pipeline
+                    .PublishInstructionsLoadedAsync(CreateExtensionContext(), sections, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                incoming = text;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(incoming))
+        {
+            return systemPrompt ?? string.Empty;
+        }
+
+        return string.IsNullOrWhiteSpace(systemPrompt)
+            ? incoming
+            : systemPrompt!.TrimEnd() + "\n\n" + incoming;
+    }
 
     private void AppendDelta(StringBuilder buffer, string delta, bool reasoning)
     {

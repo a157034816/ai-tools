@@ -73,7 +73,16 @@ public sealed class ExtensionSession : IAsyncDisposable
     }
 
     /// <summary>启动会话并分发 <c>session_start</c>。重复调用无副作用。</summary>
-    public async Task StartAsync(string? sessionId, CancellationToken cancellationToken = default)
+    /// <param name="sessionId">会话 ID（可为 null）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task StartAsync(string? sessionId, CancellationToken cancellationToken = default)
+        => StartAsync(sessionId, "startup", cancellationToken);
+
+    /// <summary>启动会话并分发 <c>session_start</c>。重复调用无副作用。</summary>
+    /// <param name="sessionId">会话 ID（可为 null）。</param>
+    /// <param name="reason">启动原因：<c>startup</c>、<c>reload</c> 或 <c>resume</c>。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public async Task StartAsync(string? sessionId, string reason, CancellationToken cancellationToken = default)
     {
         if (IsShutdown)
         {
@@ -91,10 +100,54 @@ public sealed class ExtensionSession : IAsyncDisposable
         var context = CreateContext(notify: null, appendAssistantMessage: null);
         await Runtime.PublishAsync(
             ExtensionEvent.SessionStart,
-            new SessionStartEvent { SessionId = sessionId, WorkingDirectory = WorkingDirectory },
+            new SessionStartEvent
+            {
+                SessionId = sessionId,
+                WorkingDirectory = WorkingDirectory,
+                Reason = string.IsNullOrWhiteSpace(reason) ? "startup" : reason!
+            },
             context,
             cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// 会话替换前分发 <c>session_before_switch</c>，让扩展有机会取消迁移（例如有未保存的草稿）。
+    /// </summary>
+    /// <param name="reason">迁移原因：<c>new</c>、<c>resume</c>、<c>fork</c> 或 <c>clear</c>。</param>
+    /// <param name="targetSessionId">目标会话 ID；<c>new</c> / <c>clear</c> 为 null。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>取消原因；未被取消时为 null。</returns>
+    public async Task<string?> PublishBeforeSwitchAsync(
+        string reason,
+        string? targetSessionId,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = new SessionBeforeSwitchEvent { Reason = reason, TargetSessionId = targetSessionId };
+        var dispatched = await Runtime
+            .DispatchAsync(ExtensionEvent.SessionBeforeSwitch, payload, CreateContext(null, null), failClosed: payload, cancellationToken)
+            .ConfigureAwait(false);
+
+        return (dispatched as SessionBeforeSwitchEvent ?? payload).CancelReason;
+    }
+
+    /// <summary>会话替换后分发 <c>session_switched</c>，让扩展按新分支重建状态。</summary>
+    /// <param name="reason">迁移原因：<c>new</c>、<c>resume</c>、<c>fork</c> 或 <c>clear</c>。</param>
+    /// <param name="previousSessionId">上一个会话 ID。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishSwitchedAsync(
+        string reason,
+        string? previousSessionId,
+        CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(
+            ExtensionEvent.SessionSwitched,
+            new SessionSwitchedEvent
+            {
+                Reason = reason,
+                PreviousSessionId = previousSessionId,
+                SessionId = SessionId
+            },
+            CreateContext(null, null),
+            cancellationToken);
 
     /// <summary>更新会话 ID（会话首次持久化后调用，让扩展能读到稳定标识）。</summary>
     public void UpdateSessionId(string? sessionId) => SessionId = sessionId;

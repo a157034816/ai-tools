@@ -7,7 +7,15 @@ using AiTools.Abstractions;
 
 namespace AiTools.Extensions;
 
-/// <summary>扩展可订阅的事件。语义对齐 Pi：有的只通知，有的可改写，有的可拦截。</summary>
+/// <summary>扩展可订阅的事件。语义对齐 Pi 与 Claude Code/Codex 的 hook 时机。</summary>
+/// <remarks>
+/// 事件分三类：
+/// <list type="bullet">
+/// <item><b>通知</b>：处理器异常被吞掉，不打断对话（<see cref="SessionStart"/>、<see cref="AgentStart"/>、<see cref="TurnEnd"/> 等）。</item>
+/// <item><b>转换</b>：处理器按注册顺序链式改写事件对象（<see cref="Context"/>、<see cref="ToolResult"/>、<see cref="MessageEnd"/>）。</item>
+/// <item><b>拦截</b>：处理器可阻止操作，失败时按 fail-closed 处理（<see cref="ToolCall"/>、<see cref="PermissionRequest"/>、<see cref="BeforeProviderRequest"/>）。</item>
+/// </list>
+/// </remarks>
 public enum ExtensionEvent
 {
     /// <summary>会话开始。扩展在此登记工具/命令之外的长生命周期资源。</summary>
@@ -16,20 +24,56 @@ public enum ExtensionEvent
     /// <summary>会话关闭（切换、重载或进程退出前）。处理器必须幂等。</summary>
     SessionShutdown,
 
+    /// <summary>
+    /// 会话即将被替换：<c>/new</c>、<c>/resume</c>、<c>/fork</c>、<c>/clear</c>。
+    /// 可取消迁移；<see cref="SessionBeforeSwitchEvent.Reason"/> 与 <see cref="SessionBeforeSwitchEvent.TargetSessionId"/> 说明去向。
+    /// </summary>
+    SessionBeforeSwitch,
+
+    /// <summary>会话替换完成（状态已导入、会话 ID 已更新）。用于重建分支相关的扩展状态。</summary>
+    SessionSwitched,
+
     /// <summary>用户输入到达。可改写或吞掉（返回非 null 表示已处理）。</summary>
     Input,
+
+    /// <summary>共享指令（<c>.agents</c> 等）即将并入系统提示。可改写或丢弃条目。</summary>
+    InstructionsLoaded,
 
     /// <summary>模型请求发出前。可追加提示词段落与消息。</summary>
     BeforeAgentStart,
 
+    /// <summary>一次 agent 循环开始（本轮首次请求前）。只通知。</summary>
+    AgentStart,
+
+    /// <summary>一次模型轮次开始。只通知。</summary>
+    TurnStart,
+
+    /// <summary>一条消息定稿后（用户、助手或工具结果）。可改写正文。</summary>
+    MessageEnd,
+
     /// <summary>一次模型轮次结束后。可请求追加一轮。</summary>
     TurnEnd,
+
+    /// <summary>一次 agent 循环正常运行结束（未被取消、未抛异常）。只通知。</summary>
+    AgentEnd,
+
+    /// <summary>一次 agent 循环因取消或异常结束。只通知；<see cref="AgentFailedEvent.Error"/> 区分原因。</summary>
+    AgentFailed,
 
     /// <summary>工具调用即将执行。可修改参数或拦截。</summary>
     ToolCall,
 
+    /// <summary>
+    /// 工具调用需要授权判定时（策略给出 <see cref="PermissionDecision.Ask"/>）。
+    /// 处理器可把结论改写为 Allow/Deny 或补充提示，未改写时由宿主询问用户。
+    /// </summary>
+    PermissionRequest,
+
     /// <summary>工具返回结果后。可改写结果文本。</summary>
     ToolResult,
+
+    /// <summary>工具执行失败后（抛异常或返回错误）。可观察失败原因，不影响结果。</summary>
+    ToolError,
 
     /// <summary>工具开始执行（只通知，用于渲染与计时）。</summary>
     ToolExecutionStart,
@@ -69,6 +113,51 @@ public sealed class InputEvent
     public bool Suppress { get; set; }
 }
 
+/// <summary>共享指令并入系统提示前的事件。可编辑、禁用条目或改写最终提示。</summary>
+/// <remarks>对应 Claude Code 的 <c>InstructionsLoaded</c> 与 Codex 的 AGENTS.md 加载时机。</remarks>
+public sealed class InstructionsEvent
+{
+    /// <summary>获取或设置每条指令的来源标签（例如 <c>agents</c>、<c>skill</c>）。</summary>
+    public IList<InstructionsSection> Sections { get; } = new List<InstructionsSection>();
+
+    /// <summary>
+    /// 获取或设置替换后的完整提示；null 表示按 <see cref="Sections"/> 拼接。
+    /// 设置后 <see cref="Sections"/> 不再参与拼接，但仍对处理器可见。
+    /// </summary>
+    public string? OverridePrompt { get; set; }
+
+    /// <summary>按当前配置拼出最终提示：设置了 <see cref="OverridePrompt"/> 时直接返回它。</summary>
+    /// <returns>并入系统提示的文本；全部条目被丢弃时为空串。</returns>
+    public string Build()
+    {
+        if (OverridePrompt != null)
+        {
+            return OverridePrompt;
+        }
+
+        var enabled = Sections.Where(section => section.Enabled && !string.IsNullOrWhiteSpace(section.Text)).ToArray();
+        if (enabled.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Join("\n\n", enabled.Select(section => section.Text!.TrimEnd()));
+    }
+}
+
+/// <summary>一条待并入系统提示的指令。</summary>
+public sealed class InstructionsSection
+{
+    /// <summary>获取来源标签（例如 <c>agents</c>、<c>skill</c>、<c>project</c>）。</summary>
+    public string Source { get; init; } = string.Empty;
+
+    /// <summary>获取或设置指令正文。</summary>
+    public string? Text { get; set; }
+
+    /// <summary>获取或设置是否参与拼接；设为 false 等同于丢弃该条指令。</summary>
+    public bool Enabled { get; set; } = true;
+}
+
 /// <summary>模型请求前的可变上下文。处理器就地修改，后续处理器看到修改后的值。</summary>
 public sealed class BeforeAgentStartEvent
 {
@@ -83,6 +172,75 @@ public sealed class BeforeAgentStartEvent
 
     /// <summary>获取模型名。</summary>
     public string Model { get; init; } = string.Empty;
+}
+
+/// <summary>agent 循环开始/轮次开始时的事件。</summary>
+public sealed class AgentLifecycleEvent
+{
+    /// <summary>获取模型名（循环开始时为空串）。</summary>
+    public string Model { get; init; } = string.Empty;
+
+    /// <summary>获取本轮序号（从 0 开始；<see cref="ExtensionEvent.AgentStart"/> 恒为 -1）。</summary>
+    public int TurnIndex { get; init; } = -1;
+}
+
+/// <summary>agent 循环异常结束时的事件。</summary>
+public sealed class AgentFailedEvent
+{
+    /// <summary>获取失败原因，例如 <c>cancelled</c> 或异常消息。</summary>
+    public string Error { get; init; } = string.Empty;
+
+    /// <summary>获取是否因用户取消而结束。</summary>
+    public bool Cancelled { get; init; }
+
+    /// <summary>获取本轮已产出的部分文本。</summary>
+    public string PartialText { get; init; } = string.Empty;
+
+    /// <summary>获取已完成的工具调用次数。</summary>
+    public int ToolCallCount { get; init; }
+}
+
+/// <summary>一条消息定稿时的事件。可就地改写正文。</summary>
+public sealed class MessageEvent
+{
+    /// <summary>获取消息角色（<c>user</c>、<c>assistant</c>、<c>tool</c>）。</summary>
+    public ChatRole Role { get; init; }
+
+    /// <summary>获取或设置消息正文（可改写，例如补全、脱敏或标注）。</summary>
+    public string Text { get; set; } = string.Empty;
+
+    /// <summary>获取是否为助手消息。</summary>
+    public bool IsAssistant => Role == ChatRole.Assistant;
+}
+
+/// <summary>会话替换前的事件。设置 <see cref="CancelReason"/> 即取消本次迁移。</summary>
+public sealed class SessionBeforeSwitchEvent
+{
+    /// <summary>获取迁移原因：<c>new</c>、<c>resume</c>、<c>fork</c> 或 <c>clear</c>。</summary>
+    public string Reason { get; init; } = "new";
+
+    /// <summary>获取目标会话 ID；<c>new</c> / <c>clear</c> 为 null。</summary>
+    public string? TargetSessionId { get; init; }
+
+    /// <summary>获取或设置取消原因；非空即阻止迁移。</summary>
+    public string? CancelReason { get; set; }
+
+    /// <summary>阻止本次会话迁移。</summary>
+    /// <param name="reason">展示给用户的原因。</param>
+    public void Cancel(string reason) => CancelReason = reason;
+}
+
+/// <summary>会话替换完成后的事件。</summary>
+public sealed class SessionSwitchedEvent
+{
+    /// <summary>获取迁移原因：<c>new</c>、<c>resume</c>、<c>fork</c> 或 <c>clear</c>。</summary>
+    public string Reason { get; init; } = "new";
+
+    /// <summary>获取上一个会话 ID；之前没有持久化会话时为 null。</summary>
+    public string? PreviousSessionId { get; init; }
+
+    /// <summary>获取新的会话 ID；<c>new</c> / <c>clear</c> 为 null。</summary>
+    public string? SessionId { get; init; }
 }
 
 /// <summary>工具调用事件。设置 <see cref="BlockReason"/> 即阻止执行。</summary>
@@ -101,6 +259,31 @@ public sealed class ToolCallEvent
     public void Block(string reason) => BlockReason = reason;
 }
 
+/// <summary>
+/// 工具授权的交互点。策略判定为 <see cref="PermissionDecision.Ask"/> 时分发；
+/// 处理器可把 <see cref="Decision"/> 改写为 Allow 或 Deny 以跳过用户确认。
+/// </summary>
+public sealed class PermissionRequestEvent
+{
+    /// <summary>获取工具名。</summary>
+    public string ToolName { get; init; } = string.Empty;
+
+    /// <summary>获取工具参数 JSON。</summary>
+    public string ArgumentsJson { get; init; } = "{}";
+
+    /// <summary>获取或设置判定结论；默认 <see cref="PermissionDecision.Ask"/> 表示交回宿主询问用户。</summary>
+    public PermissionDecision Decision { get; set; } = PermissionDecision.Ask;
+
+    /// <summary>获取或设置命中该判定的规则来源（例如 <c>project</c>）。</summary>
+    public string? RuleSource { get; init; }
+
+    /// <summary>获取或设置展示给用户的提示文本；null 使用宿主默认文案。</summary>
+    public string? Prompt { get; set; }
+
+    /// <summary>获取或设置原因说明；拒绝时会写入工具结果。</summary>
+    public string? Reason { get; set; }
+}
+
 /// <summary>工具结果事件。可就地改写结果文本。</summary>
 public sealed class ToolResultEvent
 {
@@ -114,6 +297,22 @@ public sealed class ToolResultEvent
     public bool IsError { get; init; }
 }
 
+/// <summary>工具执行失败的事件（只通知）。</summary>
+public sealed class ToolErrorEvent
+{
+    /// <summary>获取工具名。</summary>
+    public string ToolName { get; init; } = string.Empty;
+
+    /// <summary>获取工具调用 ID。</summary>
+    public string? ToolCallId { get; init; }
+
+    /// <summary>获取失败原因。</summary>
+    public string Error { get; init; } = string.Empty;
+
+    /// <summary>获取是否被取消而非失败。</summary>
+    public bool Cancelled { get; init; }
+}
+
 /// <summary>一轮模型交互结束的事件。</summary>
 public sealed class TurnEndEvent
 {
@@ -122,6 +321,9 @@ public sealed class TurnEndEvent
 
     /// <summary>获取本轮工具调用次数。</summary>
     public int ToolCallCount { get; init; }
+
+    /// <summary>获取本轮序号（从 0 开始）。</summary>
+    public int TurnIndex { get; init; }
 
     /// <summary>获取或设置是否要求再追加一轮（扩展可给出后续指令）。</summary>
     public bool Continue { get; set; }
@@ -226,7 +428,7 @@ public sealed class ContextEvent
     public string Model { get; init; } = string.Empty;
 }
 
-/// <summary>会话开始事件。</summary>
+/// <summary>会话开始/关闭事件。</summary>
 public sealed class SessionStartEvent
 {
     /// <summary>获取会话 ID。</summary>
@@ -234,6 +436,9 @@ public sealed class SessionStartEvent
 
     /// <summary>获取工作目录。</summary>
     public string WorkingDirectory { get; init; } = string.Empty;
+
+    /// <summary>获取启动原因：<c>startup</c>、<c>reload</c> 或 <c>resume</c>。</summary>
+    public string Reason { get; init; } = "startup";
 }
 
 /// <summary>一个可编程扩展：由宿主注册到 <see cref="ExtensionRuntime"/>。</summary>

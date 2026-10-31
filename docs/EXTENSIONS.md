@@ -216,28 +216,44 @@ var diagnostics = await pipeline.ReloadAsync();
 
 | 事件 | 语义 | 载荷 / 可做的事情 |
 |---|---|---|
-| `SessionStart` | 会话开始 | `SessionStartEvent`：启动资源、读会话状态 |
+| `SessionStart` | 会话开始 | `SessionStartEvent`：`Reason`（`startup`/`reload`/`resume`）；启动资源、读会话状态 |
 | `SessionShutdown` | 会话关闭 | 释放资源；处理器必须幂等 |
+| `SessionBeforeSwitch` | 会话即将替换（`/new`、`/resume`、`/fork`、`/clear`） | `SessionBeforeSwitchEvent`：`CancelReason` 阻止迁移 |
+| `SessionSwitched` | 会话替换完成 | `SessionSwitchedEvent`：`PreviousSessionId` / `SessionId`，用于重建分支相关状态 |
 | `Input` | 用户输入 | `InputEvent`：改写 `Text` 或 `Suppress` 吞掉 |
+| `InstructionsLoaded` | 共享指令（`.agents`、技能清单）并入系统提示前 | `InstructionsEvent`：改写 `Sections[].Text`、`Enabled`，或设 `OverridePrompt` 整体替换 |
 | `BeforeAgentStart` | 请求发出前 | `BeforeAgentStartEvent`：追加 `PromptSections`、`PrependMessages` |
+| `AgentStart` | agent 循环开始 | `AgentLifecycleEvent`：`Model`（只通知） |
+| `TurnStart` | 轮次开始 | `AgentLifecycleEvent`：`TurnIndex`（只通知） |
+| `MessageEnd` | 一条消息定稿 | `MessageEvent`：改写 `Text`；助手正文的改写会写入历史 |
 | `Context` | provider 请求前 | `ContextEvent`：过滤/改写消息（系统提示不受影响） |
 | `ContextWithSystem` | provider 请求前 | `ContextEvent`：同时改写 `SystemPrompt` |
 | `ToolCall` | 工具调用前 | `ToolCallEvent`：改写 `ArgumentsJson`、`BlockReason` 拦截；覆盖所有分发路径（含 `codemode` 脚本的嵌套调用与 `ctx.ExecuteToolAsync`） |
+| `PermissionRequest` | 策略判定为 `Ask` 时 | `PermissionRequestEvent`：改写 `Decision`（Allow 跳过确认 / Deny 直接拒绝）、`Prompt`、`Reason` |
 | `ToolResult` | 工具返回后 | `ToolResultEvent`：脱敏/截断 `Text` |
-| `ToolExecutionStart` / `Update` / `End` | 工具生命周期 | `ToolExecutionEvent`：观察参数、增量输出、耗时 |
+| `ToolError` | 工具失败后 | `ToolErrorEvent`：`Error`（只通知，结果已由 `ToolResult` 定稿） |
+| `ToolExecutionStart` / `Update` / `End` | 工具生命周期 | `ToolExecutionEvent`：观察参数、增量输出（经 `ctx.ReportUpdateAsync`）、耗时 |
 | `BeforeProviderHeaders` | 请求头构造后 | `ProviderHeadersEvent`：就地改写请求头 |
 | `BeforeProviderRequest` | 请求体序列化后 | `ProviderRequestEvent`：改写 `BodyJson` 或 `BlockReason` 阻止发出 |
 | `AfterProviderResponse` | 收到响应头 | `ProviderResponseEvent`：状态码、长度、耗时 |
 | `ProviderStreamEvent` | 每个流事件 | `ProviderStreamEvent`：原始 SSE/NDJSON 数据（只读） |
-| `TurnEnd` | 一轮结束 | `TurnEndEvent`：`Continue` + `ContinuationPrompt` 请求追加一轮 |
+| `TurnEnd` | 一轮结束 | `TurnEndEvent`：`Continue` + `ContinuationPrompt` 请求追加一轮；`TurnIndex` |
+| `AgentEnd` | agent 循环正常结束 | `AgentLifecycleEvent`（只通知） |
+| `AgentFailed` | agent 循环被取消或异常结束 | `AgentFailedEvent`：`Error`、`Cancelled`、`PartialText`、`ToolCallCount`（只通知） |
 
 组合语义（与 Pi 一致）：
 
 - 处理器按**注册顺序**执行。
 - 转换类事件链式传递：后一个看到前一个的修改。
 - **拦截类 fail-closed**：`ToolCall` 处理器抛异常时按拒绝执行处理，不会放行。
-- 通知类（`SessionStart` 等）的异常被吞掉，不打断对话。
+- 通知类（`SessionStart`、`AgentStart`、`ToolError` 等）的异常被吞掉，不打断对话。
 - `pi.on` 的等价物返回一个取消订阅的 `Action`。
+
+### 工具分发顺序
+
+一次工具调用依次经过：`ToolCall`（可拦截/改写参数）→ 权限闸门（`PermissionRequest` 仅在策略给出 `Ask` 时分发）→ 执行（期间可发 `ToolExecutionUpdate`）→ `ToolResult`（可改写）→ `ToolError`（仅失败时，只通知）→ `ToolExecutionEnd`。
+
+`ToolExecutionUpdate` 过去只有声明没有分发，现在由工具主动上报：在工具实现里调用 `ctx.ReportUpdateAsync("...")` 即可，宿主的 `PublishAsync(ToolExecutionUpdate, …)` 订阅者和界面都会收到。没有订阅者时是空操作，因此给已有工具加进度输出不需要改宿主。
 
 ## 工具：曝光、激活集合与命名空间
 
@@ -479,6 +495,29 @@ var policy = PermissionPolicy.FromRules(new[]
 });
 ```
 
+`Ask` 判定还会先经过 `PermissionRequest` 事件，扩展可以接管（对应 Claude Code 的同名 hook）：
+
+```csharp
+api.On<PermissionRequestEvent>(ExtensionEvent.PermissionRequest, async (request, ctx, ct) =>
+{
+    if (request.ToolName == "shell" && request.ArgumentsJson.Contains("\"git\" \"push\""))
+    {
+        request.Decision = PermissionDecision.Deny;
+        request.Reason = "推送需人工执行";
+    }
+    else if (IsReadOnlyCommand(request.ArgumentsJson))
+    {
+        request.Decision = PermissionDecision.Allow;   // 只读命令免确认
+    }
+
+    return request;
+});
+```
+
+- 未改写（`Decision` 仍为 `Ask`）时，`Prompt` / `Reason` 留空即交回宿主询问用户，与旧行为一致。
+- 处理器抛异常时忽略接管，仍走宿主默认确认流程（不会因此放行）。
+- 只有经 `ExtensionPipeline.GuardToolAsync(..., context, ct)` 的调用会分发该事件；直接调用 `PermissionGate.GuardAsync` 时不经过扩展。
+
 - `Tool`：精确名、`*`、或 `<ns>:*` 前缀形式。
 - `Decision`：`Allow` / `Ask` / `Deny`。
 - `ArgumentPattern`：对参数 JSON 的 glob（只支持 `*`），为 null 时不约束参数。
@@ -593,9 +632,20 @@ var trust = ProjectTrust.Evaluate(cwd, trustedRoots, requireTrust);
 | `context` / `context_with_system` | 已实现（`ContextEvent`） |
 | `before_provider_headers` / `before_provider_request` / `after_provider_response` | 已实现（经 `IAiHttpObserver`） |
 | `provider_stream_event` | 已实现（只读；SSE 与 NDJSON 都上报，`[DONE]` 也计入） |
-| `tool_execution_start/update/end` | 已实现；`Update` 只有显式上报时才触发（当前内置工具不上报增量） |
+| `tool_execution_start/update/end` | 已实现；`Update` 由工具经 `ctx.ReportUpdateAsync` 主动上报（内置工具尚未上报增量） |
+| `agent_start` / `agent_end` | 已实现（`AgentStart` / `AgentEnd`） |
+| `agent_before_settle` / `agent_settled` | `TurnEnd` 的 `Continue` 覆盖了"再追加一轮"这一半；本项目没有 settle 阶段（无自动重试/压缩/排队），因此无需对齐 |
+| `turn_start` / `turn_end` | 已实现（`TurnStart` 只通知，`TurnEnd` 可续轮；均带 `TurnIndex`） |
+| `message_start` / `message_update` / `message_end` | `MessageEnd` 已实现（可改写正文）；`message_start` 与逐 token 的 `message_update` 由 `ProviderStreamEvent` 与 `ToolExecutionUpdate` 覆盖，未单列 |
+| `session_before_switch` / `session_before_fork` | 已实现（`SessionBeforeSwitch`，`Reason` 区分 `new`/`resume`/`fork`/`clear`，可取消） |
+| `session_compact` / `session_before_compact` / `session_compact_failed` | **未实现**：本项目没有上下文压缩，加空钩子只是死代码 |
+| `session_before_tree` / `session_tree` | 未实现（无会话树导航，分支靠 `/fork`） |
+| `cache_warming_decision` | 未实现（无 prompt 缓存预热机制） |
+| `ui_prompt_start` / `ui_prompt_end` | 未实现（扩展 UI 调用是同步接缝，宿主自行渲染） |
+| `model_select` / `thinking_level_select` | 未实现（宿主切换模型不发事件；可在 `BeforeAgentStart` 读 `Model`） |
+| `user_bash` | 未实现（本项目没有 `!` 前缀的直接 shell 通道） |
 | `ctx.ui`（select/confirm/input） | 已实现（`IExtensionUi`；WPF 用模态窗口，无 UI 时退化） |
-| `appendEntry`、分支感知状态 | `AppendEntry` 已实现（状态桶 + 会话持久化）；分支重建靠 `/fork` 复制快照 |
+| `appendEntry`、分支感知状态 | `AppendEntry` 已实现（状态桶 + 会话持久化）；分支重建靠 `/fork` 复制快照，并在 `SessionSwitched` 里重算 |
 | `registerProvider` / `registerMcpServer` / `registerVirtualModel` | 已实现 |
 | 工具 render 钩子 | 已实现（`RegisterToolRenderer`，WPF 用于工具 chip） |
 | `prepareLoadout` | 已实现（`RegisterLoadoutPreparer`：`Descriptions` / `HiddenDeclarations`，抛异常的准备器被跳过） |
@@ -603,6 +653,25 @@ var trust = ProjectTrust.Evaluate(cwd, trustedRoots, requireTrust);
 | `exposure: codemode` / `tool_search` | 已实现（五种曝光 + `ActivateTool`/`SetActiveTools`；内置 `tool_search` 与 JavaScript 沙箱 `codemode`） |
 | `workflows` | 已实现（Jint 沙箱、`workflows/*.js`、`workflow_list`） |
 | `outputStyle` | 已实现（`output-styles/*.md` 与 manifest `outputStyles`；`/output-style` 切换，正文追加而非替换系统提示） |
-| 权限/信任模型（`project_trust`） | 已实现（`ProjectTrust` 判定 + `PermissionPolicy` 规则引擎 + fail-closed 的 `tool_call` 后备 + 可交互的 `GuardToolAsync`） |
+| 权限/信任模型（`project_trust`） | 已实现（`ProjectTrust` 判定 + `PermissionPolicy` 规则引擎 + fail-closed 的 `tool_call` 后备 + `PermissionRequest` 扩展接管 + 可交互的 `GuardToolAsync`） |
 | 终端 TUI 组件、themes、monitors、channels | 未实现 |
 | `codemode` 的语义 | **部分对齐**：实现了 JavaScript 沙箱、`executeTool`、`describeNamespace` 与嵌套调用事件链；差异：reach 是本地 token/namespace 启发式而非 Pi 的 script-words 规则，`nestedCalls` 仅随单次调用结果返回而非 session-level bounded record，单次最多 64 次嵌套调用；仍无 per-tool `usage` 统计、`parentToolCallId`/`<parent id>/<n>` 调用 ID 或 `{signal, onUpdate}` 桥接 |
+
+### 与 Claude Code / Codex hook 的对照
+
+| Claude Code / Codex hook | 本项目对应 |
+|---|---|
+| `SessionStart`（含 `source: startup/resume/clear/compact`） | `SessionStart`（`Reason`）；会话内的 `/clear` 走 `SessionBeforeSwitch` + `SessionSwitched` |
+| `SessionEnd` | `SessionShutdown`（另有 `AgentFailed` 覆盖单轮结束） |
+| `UserPromptSubmit` | `Input`（可改写/吞掉） |
+| `PreToolUse`（含 `permissionDecision`） | `ToolCall`（拦截/改参数）+ `PermissionRequest`（授权判定） |
+| `PostToolUse` / `PostToolUseFailure` | `ToolResult` / `ToolError` |
+| `PermissionRequest` | `PermissionRequest` |
+| `Notification` | `IExtensionUi.Notify`（不是事件；扩展直接调用） |
+| `Stop` / `StopFailure` | `AgentEnd` / `AgentFailed` |
+| `SubagentStart` / `SubagentStop` | **未实现**：本项目没有子代理运行时 |
+| `PreCompact` / `PostCompact` | **未实现**：本项目没有上下文压缩 |
+| `InstructionsLoaded` | `InstructionsLoaded`（按来源分条，可禁用/改写） |
+| `ConfigChange` / `InstructionsLoaded` 之外的加载类 hook | 未实现（设置变更有 `/reload`，但无事件） |
+| `TaskCreated` / `TaskCompleted` / `TeammateIdle` / `WorktreeCreate` / `WorktreeRemove` | 未实现（无任务队列、无多代理、无 worktree 编排） |
+| Codex `AgentStart` / `AgentEnd` / `TurnStart` / `ContextCompact` | `AgentStart` / `AgentEnd` / `TurnStart`；`ContextCompact` 未实现 |

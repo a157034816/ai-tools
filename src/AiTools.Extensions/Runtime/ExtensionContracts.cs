@@ -244,6 +244,17 @@ public sealed class ToolContext
     /// <summary>获取当前正在执行的工具名；嵌套调用的可达范围按它判定（null 表示非工具内调用）。</summary>
     internal string? CallerToolName { get; init; }
 
+    /// <summary>
+    /// 获取或设置增量输出上报回调（对应 Pi 的 <c>onUpdate</c>）；宿主未提供时为 null。
+    /// 宿主在调用工具前填充；工具通常通过 <see cref="ReportUpdateAsync"/> 使用它。
+    /// </summary>
+    public Func<string, Task>? ReportProgress { get; init; }
+
+    /// <summary>向宿主上报一条增量输出（触发 <c>tool_execution_update</c>）。未提供通道时是空操作。</summary>
+    /// <param name="text">增量文本，例如命令输出的新一行。</param>
+    public Task ReportUpdateAsync(string text)
+        => ReportProgress == null ? Task.CompletedTask : ReportProgress(text);
+
     /// <summary>持久化一条自定义条目。</summary>
     public void AppendEntry(string kind, object? value) => EntryStore?.Invoke(kind, value);
 

@@ -402,7 +402,7 @@ public sealed class MyExtension : IExtension
 | 编排 | `tool_search` / `codemode` | 查找并激活未声明工具；`codemode` 在 Jint 沙箱执行 JavaScript，按脚本推导可达范围并通过 `executeTool` 调用工具 |
 | 提问 | `ask` | 通用提问：标题 + 若干带说明的选项，返回用户选择；呈现方式可替换（WPF 默认在输入框上方叠内联面板），无 UI 时返回 `unavailable` |
 | 装载 | `RegisterLoadoutPreparer` / `RegisterNamespace` | 改写声明描述、隐藏声明（仍可调用）；命名空间分组，`my-docs` ≡ `my_docs` |
-| 事件 | `On(ExtensionEvent.X, …)` | `Input`、`BeforeAgentStart`、`Context`、`ToolCall`、`ToolResult`、`ToolExecution*`、`BeforeProviderHeaders`、`BeforeProviderRequest`、`AfterProviderResponse`、`ProviderStreamEvent`、`TurnEnd`、`SessionStart/Shutdown` |
+| 事件 | `On(ExtensionEvent.X, …)` | `SessionStart/BeforeSwitch/Switched/Shutdown`、`Input`、`InstructionsLoaded`、`BeforeAgentStart`、`AgentStart/End/Failed`、`TurnStart/End`、`MessageEnd`、`Context/ContextWithSystem`、`ToolCall`、`PermissionRequest`、`ToolResult`、`ToolError`、`ToolExecution*`、`BeforeProviderHeaders`、`BeforeProviderRequest`、`AfterProviderResponse`、`ProviderStreamEvent` |
 | 状态 | `ctx.State` | 按扩展名分桶的 JSON，随会话持久化 |
 | 界面 | `ctx.Ui` | 通知/状态栏/确认/输入/选择；无 UI 宿主退化为非交互 |
 | 条目 | `ctx.AppendEntry` | 不进模型上下文的自定义持久化数据 |

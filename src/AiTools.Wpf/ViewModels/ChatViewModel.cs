@@ -142,6 +142,7 @@ public sealed class ChatViewModel : ObservableObject
     private bool _isLoadingConversations;
     private string _conversationTitle = "新对话";
     private int _baselineMessageCount;
+    private int _turnIndex;
     private bool _isCommandPaletteOpen;
     private SlashCommandViewModel? _selectedCommand;
     private AiTools.Extensions.ExtensionPipeline? _pipeline;
@@ -681,16 +682,25 @@ public sealed class ChatViewModel : ObservableObject
     private async Task ClearAsync()
     {
         await PersistCurrentConversationAsync().ConfigureAwait(false);
+        if (!await CanSwitchSessionAsync("clear", null).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var previousId = _currentConversation?.Id;
         OnUi(() =>
         {
             Messages.Clear();
             _history.Clear();
             _baselineMessageCount = 0;
             _lastTurnRolledBack = false;
+            _turnIndex = 0;
             RaiseCommandStates();
             SetStatus(HasUsableProvider ? "对话已清空。" : "尚未配置可用的服务商，请先打开设置添加。",
                 HasUsableProvider ? StatusKind.Info : StatusKind.Warning);
         });
+
+        await PublishSessionSwitchedAsync("clear", previousId).ConfigureAwait(false);
     }
 
     /// <summary>通过清空所有消息来开始新对话。</summary>
@@ -708,6 +718,12 @@ public sealed class ChatViewModel : ObservableObject
     {
         // 保存当前会话后再开启新会话，避免丢失未落盘的内容。
         await PersistCurrentConversationAsync().ConfigureAwait(false);
+        if (!await CanSwitchSessionAsync("new", null).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var previousId = _currentConversation?.Id;
         OnUi(() =>
         {
             Messages.Clear();
@@ -715,6 +731,7 @@ public sealed class ChatViewModel : ObservableObject
             _baselineMessageCount = 0;
             _lastTurnRolledBack = false;
             _currentConversation = null;
+            _turnIndex = 0;
             _pipeline?.Runtime.State.ClearAll();
             ConversationTitle = "新对话";
             IsResumePickerOpen = false;
@@ -722,7 +739,37 @@ public sealed class ChatViewModel : ObservableObject
             SetStatus(HasUsableProvider ? "已开始新对话。" : "尚未配置可用的服务商，请先打开设置添加。",
                 HasUsableProvider ? StatusKind.Info : StatusKind.Warning);
         });
+
+        await PublishSessionSwitchedAsync("new", previousId).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// 分发 <c>session_before_switch</c>；扩展取消时把原因显示在状态栏并返回 false。
+    /// </summary>
+    private async Task<bool> CanSwitchSessionAsync(string reason, string? targetSessionId)
+    {
+        if (_pipeline == null)
+        {
+            return true;
+        }
+
+        var cancelReason = await _pipeline.Session
+            .PublishBeforeSwitchAsync(reason, targetSessionId)
+            .ConfigureAwait(false);
+        if (string.IsNullOrEmpty(cancelReason))
+        {
+            return true;
+        }
+
+        SetStatus(cancelReason, StatusKind.Warning);
+        return false;
+    }
+
+    /// <summary>会话替换完成后分发 <c>session_switched</c>；未配置扩展管道时是空操作。</summary>
+    private Task PublishSessionSwitchedAsync(string reason, string? previousSessionId)
+        => _pipeline == null
+            ? Task.CompletedTask
+            : _pipeline.Session.PublishSwitchedAsync(reason, previousSessionId);
 
     /// <summary>打开 /resume 选择器并刷新已保存的对话列表。</summary>
     public async Task OpenResumePickerAsync()
@@ -790,14 +837,23 @@ public sealed class ChatViewModel : ObservableObject
 
             await PersistCurrentConversationAsync().ConfigureAwait(false);
 
+            if (!await CanSwitchSessionAsync("resume", record.Id).ConfigureAwait(false))
+            {
+                await OpenResumePickerAsync().ConfigureAwait(false);
+                return;
+            }
+
+            var previousId = _currentConversation?.Id;
             OnUi(() =>
             {
                 ApplyConversation(record);
+                _turnIndex = 0;
                 IsResumePickerOpen = false;
                 SetStatus($"已恢复对话「{record.Title}」（{record.Messages.Count} 条消息）。", StatusKind.Success);
                 ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
             });
 
+            await PublishSessionSwitchedAsync("resume", previousId).ConfigureAwait(false);
             RestoreSelection(record);
         }
         catch (Exception ex)
@@ -863,13 +919,21 @@ public sealed class ChatViewModel : ObservableObject
             }
 
             var fork = await store.ForkAsync(source).ConfigureAwait(false);
+            if (!await CanSwitchSessionAsync("fork", fork.Id).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            var previousId = _currentConversation?.Id;
             OnUi(() =>
             {
                 ApplyConversation(fork);
+                _turnIndex = 0;
                 SetStatus($"已从「{source.Title}」分叉出新对话「{fork.Title}」。", StatusKind.Success);
                 ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
             });
 
+            await PublishSessionSwitchedAsync("fork", previousId).ConfigureAwait(false);
             RaiseCommandStates();
         }
         catch (Exception ex)
@@ -1378,7 +1442,14 @@ public sealed class ChatViewModel : ObservableObject
         ChatMessageViewModel? userBubble = null;
         if (userText != null)
         {
-            _history.Add(new HistoryEntry(ChatMessage.User(userText), displayText));
+            if (_pipeline != null)
+            {
+                userText = await _pipeline
+                    .PublishMessageEndAsync(CreateExtensionContext(), ChatRole.User, userText, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            _history.Add(new HistoryEntry(ChatMessage.User(userText), displayText ?? userText));
             userBubble = new ChatMessageViewModel(true, displayText ?? userText)
             {
                 PromptText = userText
@@ -1435,6 +1506,7 @@ public sealed class ChatViewModel : ObservableObject
 
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
+        var turnIndex = _turnIndex++;
         IsBusy = true;
         assistantBubble.IsStreaming = true;
         SetStatus("正在生成…", StatusKind.Info);
@@ -1443,6 +1515,12 @@ public sealed class ChatViewModel : ObservableObject
         try
         {
             var options = AiToolsWpf.Options;
+
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentStartAsync(CreateExtensionContext(), model.Id, token).ConfigureAwait(false);
+                await _pipeline.PublishTurnStartAsync(CreateExtensionContext(), turnIndex, token).ConfigureAwait(false);
+            }
 
             // 技能 provider 可能晚于页面初始化才可用（扩展在会话期间登记技能），
             // 因此在构建工具表之前补一次注册，保证 load_skill 与技能清单同步出现。
@@ -1514,9 +1592,7 @@ public sealed class ChatViewModel : ObservableObject
             var agentsPrompt = AiToolsWpf.SharedAgents?.BuildInstructionsPrompt();
             if (!string.IsNullOrWhiteSpace(agentsPrompt))
             {
-                systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
-                    ? agentsPrompt
-                    : systemPrompt!.TrimEnd() + "\n\n" + agentsPrompt;
+                systemPrompt = await MergeInstructionsAsync(systemPrompt, "agents", agentsPrompt!, token).ConfigureAwait(false);
             }
 
             // 技能清单：与 SkillToolset 的渐进式披露配合，模型据此决定何时 load_skill。
@@ -1529,9 +1605,7 @@ public sealed class ChatViewModel : ObservableObject
             var skillPrompt = _skillCatalogProvider?.Toolset.BuildSystemPrompt();
             if (!string.IsNullOrWhiteSpace(skillPrompt))
             {
-                systemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
-                    ? skillPrompt
-                    : systemPrompt!.TrimEnd() + "\n\n" + skillPrompt;
+                systemPrompt = await MergeInstructionsAsync(systemPrompt, "skill", skillPrompt!, token).ConfigureAwait(false);
             }
 
             // context / context_with_system：扩展可过滤消息或改写系统提示。
@@ -1649,7 +1723,19 @@ public sealed class ChatViewModel : ObservableObject
                             WorkingDirectory = _pipeline.Session.WorkingDirectory,
                             // 工具可能弹对话框（例如 ask）；不传 Ui 会让它在真实对话里永久不可用。
                             Ui = _pipeline.Ui,
-                            EntryStore = _pipeline.Session.CreateContext(null, null).EntryStore
+                            EntryStore = _pipeline.Session.CreateContext(null, null).EntryStore,
+                            // 长时工具经 ReportUpdateAsync 上报增量，触发 tool_execution_update。
+                            ReportProgress = partial => _pipeline.Runtime.PublishAsync(
+                                AiTools.Extensions.ExtensionEvent.ToolExecutionUpdate,
+                                new AiTools.Extensions.ToolExecutionEvent
+                                {
+                                    ToolName = call.Name,
+                                    ToolCallId = call.Id,
+                                    ArgumentsJson = call.ArgumentsJson,
+                                    PartialOutput = partial
+                                },
+                                CreateExtensionContext(),
+                                cancellationToken)
                         };
 
                         var toolResult = await _pipeline.Runtime.InvokeToolAsync(
@@ -1680,7 +1766,9 @@ public sealed class ChatViewModel : ObservableObject
                                 prompt,
                                 defaultValue: false,
                                 cancellationToken: cancellationToken).ConfigureAwait(false);
-                        });
+                        },
+                        CreateExtensionContext(),
+                        cancellationToken);
 
                     result = guarded == null
                         ? await RunAsync().ConfigureAwait(false)
@@ -1712,6 +1800,17 @@ public sealed class ChatViewModel : ObservableObject
                 var finalText = (transformed as AiTools.Extensions.ToolResultEvent ?? resultEvent).Text;
                 toolStopwatch.Stop();
 
+                var isError = resultEvent.IsError || (transformed as AiTools.Extensions.ToolResultEvent)?.IsError == true;
+                if (isError)
+                {
+                    await _pipeline.PublishToolErrorAsync(
+                        CreateExtensionContext(),
+                        call.Name,
+                        finalText,
+                        call.Id,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 await _pipeline.Runtime.PublishAsync(
                     AiTools.Extensions.ExtensionEvent.ToolExecutionEnd,
                     new AiTools.Extensions.ToolExecutionEvent
@@ -1720,7 +1819,8 @@ public sealed class ChatViewModel : ObservableObject
                         ToolCallId = call.Id,
                         ArgumentsJson = call.ArgumentsJson,
                         ResultText = finalText,
-                        Duration = toolStopwatch.Elapsed
+                        Duration = toolStopwatch.Elapsed,
+                        IsError = isError
                     },
                     CreateExtensionContext(),
                     cancellationToken).ConfigureAwait(false);
@@ -1766,7 +1866,8 @@ public sealed class ChatViewModel : ObservableObject
                     CreateExtensionContext(),
                     buffer.SnapshotText(),
                     toolCallCount,
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None,
+                    turnIndex).ConfigureAwait(false);
             }
 
             var streamedText = buffer.SnapshotText();
@@ -1774,6 +1875,15 @@ public sealed class ChatViewModel : ObservableObject
 
             var fallbackText = response.GetText();
             var visibleText = streamedText.Length > 0 ? streamedText : fallbackText;
+
+            // message_end：助手消息定稿前，扩展可改写正文（例如补全结尾或脱敏）。
+            if (_pipeline != null && !string.IsNullOrWhiteSpace(visibleText))
+            {
+                visibleText = await _pipeline
+                    .PublishMessageEndAsync(CreateExtensionContext(), ChatRole.Assistant, visibleText, token)
+                    .ConfigureAwait(false);
+            }
+
             var historyText = visibleText;
             var usageText = FormatUsage(response.Usage);
 
@@ -1818,12 +1928,28 @@ public sealed class ChatViewModel : ObservableObject
             catch (Exception)
             {
             }
+
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentEndAsync(CreateExtensionContext(), CancellationToken.None).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
             RemoveLastUserTurnFromHistory();
             _lastTurnRolledBack = true;
             var partialText = buffer.SnapshotText();
+
+            if (_pipeline != null)
+            {
+                await _pipeline.PublishAgentFailedAsync(
+                    CreateExtensionContext(),
+                    "已停止生成。",
+                    cancelled: true,
+                    partialText,
+                    toolCallCount,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
             var partialReasoning = buffer.SnapshotReasoning();
             OnUi(() =>
             {
@@ -1841,10 +1967,12 @@ public sealed class ChatViewModel : ObservableObject
         }
         catch (AiServiceException ex)
         {
+            await PublishAgentFailureAsync(DescribeServiceException(ex), buffer, toolCallCount).ConfigureAwait(false);
             HandleTurnError(assistantBubble, DescribeServiceException(ex), buffer);
         }
         catch (Exception ex)
         {
+            await PublishAgentFailureAsync(ex.Message, buffer, toolCallCount).ConfigureAwait(false);
             HandleTurnError(assistantBubble, ex.Message, buffer);
         }
         finally
@@ -1872,6 +2000,61 @@ public sealed class ChatViewModel : ObservableObject
             await PersistCurrentConversationAsync().ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// 把一段宿主指令（<c>.agents</c> 共享指令、技能清单）经 <c>instructions_loaded</c> 并入系统提示，
+    /// 让扩展可以改写或丢弃条目。扩展管道不可用或处理失败时退回原样拼接。
+    /// </summary>
+    private async Task<string> MergeInstructionsAsync(
+        string? systemPrompt,
+        string source,
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var incoming = text;
+        if (_pipeline != null)
+        {
+            try
+            {
+                var sections = new List<AiTools.Extensions.InstructionsSection>
+                {
+                    new() { Source = source, Text = text }
+                };
+                incoming = await _pipeline
+                    .PublishInstructionsLoadedAsync(CreateExtensionContext(), sections, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                incoming = text;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(incoming))
+        {
+            return systemPrompt ?? string.Empty;
+        }
+
+        return string.IsNullOrWhiteSpace(systemPrompt)
+            ? incoming
+            : systemPrompt!.TrimEnd() + "\n\n" + incoming;
+    }
+
+    /// <summary>分发 <c>agent_failed</c>；未配置扩展管道时是空操作。</summary>
+    private Task PublishAgentFailureAsync(string error, StreamBuffer buffer, int toolCallCount)
+        => _pipeline == null
+            ? Task.CompletedTask
+            : _pipeline.PublishAgentFailedAsync(
+                CreateExtensionContext(),
+                error,
+                cancelled: false,
+                buffer.SnapshotText(),
+                toolCallCount,
+                CancellationToken.None);
 
     private void HandleTurnError(
         ChatMessageViewModel assistantBubble,

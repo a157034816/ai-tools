@@ -123,15 +123,15 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 
 | 文件 | 内容 |
 |---|---|
-| `Runtime/ExtensionContracts.cs` | `IExtension` / `IExtensionApi`、`ExtensionCommand`、`ExtensionTool`、`ToolExposure`、`CommandResult`、`CommandContext` / `ToolContext` |
-| `Runtime/ExtensionEvents.cs` | 事件枚举与载荷：`Input`、`BeforeAgentStart`、`ToolCall`、`ToolResult`、`TurnEnd`、`SessionStart`/`SessionShutdown` |
-| `Runtime/ExtensionRuntime.cs` | 注册表与分发：后注册胜出、转换类链式组合、拦截类 fail-closed；`ExecuteToolAsync`（带事件）与 `InvokeToolAsync`（不带） |
-| `Runtime/ExtensionSession.cs` | `session_start` / 幂等 `session_shutdown`、逆序清理回调 |
+| `Runtime/ExtensionContracts.cs` | `IExtension` / `IExtensionApi`、`ExtensionCommand`、`ExtensionTool`、`ToolExposure`、`CommandResult`、`CommandContext` / `ToolContext`（含 `ReportUpdateAsync`） |
+| `Runtime/ExtensionEvents.cs` | 事件枚举与载荷：会话（`SessionStart`/`SessionBeforeSwitch`/`SessionSwitched`/`SessionShutdown`）、输入与指令（`Input`/`InstructionsLoaded`）、agent 循环（`BeforeAgentStart`/`AgentStart`/`TurnStart`/`MessageEnd`/`TurnEnd`/`AgentEnd`/`AgentFailed`）、工具（`ToolCall`/`PermissionRequest`/`ToolResult`/`ToolError`/`ToolExecution*`）与 provider 四件套 |
+| `Runtime/ExtensionRuntime.cs` | 注册表与分发：后注册胜出、转换类链式组合、拦截类 fail-closed；`ExecuteToolAsync`（带事件与增量回调）与 `InvokeToolAsync`（不带） |
+| `Runtime/ExtensionSession.cs` | `session_start` / 幂等 `session_shutdown`、会话切换前后事件、逆序清理回调 |
 | `Runtime/ToolLoadout.cs` | 装载结果（`Declared`/`Callable`/`All` + `Descriptions`/`HiddenDeclarations`）、`ToolNamespace`、`ToolReach`、`ToolGroup` |
 | `Runtime/ToolSearchTool.cs` | 内置 `tool_search`：在 `Codemode`/`Deferred` 里按子串查找并激活前 10 个 |
 | `Runtime/CodemodeTool.cs` | 内置 `codemode`：Jint JavaScript 沙箱、脚本推导可达范围、嵌套工具调用记录与 60 秒上限 |
 | `ExtensionStateStore.cs` | 按扩展名分桶的 JSON 状态，`TryGet<T>` 区分缺失与默认值，可 `ToJson`/`LoadFromJson` |
-| `ExtensionPipeline.cs` | 宿主入口：命令目录、`PrepareTurnAsync`（提示词/输出风格/工具）、`GuardToolAsync`、权限后备、状态导入导出 |
+| `ExtensionPipeline.cs` | 宿主入口：命令目录、`PrepareTurnAsync`（提示词/输出风格/工具）、agent 循环与工具的时机分发、`GuardToolAsync`（含 `PermissionRequest` 接管）、权限后备、状态导入导出 |
 | `OutputStyles.cs` | `OutputStyle`/`OutputStyleCatalog`/`OutputStyleSelection`；`OutputStylePrompt.Apply` 追加正文而不删宿主提示 |
 | `Permissions.cs` | `PermissionRule`/`PermissionPolicy`（deny > ask > allow）、`PermissionGate`、`ProjectTrust`、`AccessControl` |
 | `Workflows/` | `WorkflowDefinition`/`WorkflowLoader`、Jint 沙箱 `WorkflowRuntime`、把工作流变成命令的 `WorkflowCommandAdapter` |

@@ -488,7 +488,27 @@ public sealed class ScriptExtension : IExtension, IDisposable
             ProviderResponseEvent e => JsonSerializer.Serialize(new { providerName = e.ProviderName, statusCode = e.StatusCode, contentLength = e.ContentLength, durationMs = e.Duration.TotalMilliseconds }),
             ProviderStreamEvent e => JsonSerializer.Serialize(new { providerName = e.ProviderName, data = e.Data, eventType = e.EventType }),
             ToolExecutionEvent e => JsonSerializer.Serialize(new { toolName = e.ToolName, toolCallId = e.ToolCallId, argumentsJson = e.ArgumentsJson, partialOutput = e.PartialOutput, resultText = e.ResultText, isError = e.IsError, durationMs = e.Duration.TotalMilliseconds }),
-            SessionStartEvent e => JsonSerializer.Serialize(new { sessionId = e.SessionId, workingDirectory = e.WorkingDirectory }),
+            SessionStartEvent e => JsonSerializer.Serialize(new { sessionId = e.SessionId, workingDirectory = e.WorkingDirectory, reason = e.Reason }),
+            SessionBeforeSwitchEvent e => JsonSerializer.Serialize(new { reason = e.Reason, targetSessionId = e.TargetSessionId, cancelReason = e.CancelReason }),
+            SessionSwitchedEvent e => JsonSerializer.Serialize(new { reason = e.Reason, previousSessionId = e.PreviousSessionId, sessionId = e.SessionId }),
+            AgentLifecycleEvent e => JsonSerializer.Serialize(new { model = e.Model, turnIndex = e.TurnIndex }),
+            AgentFailedEvent e => JsonSerializer.Serialize(new { error = e.Error, cancelled = e.Cancelled, partialText = e.PartialText, toolCallCount = e.ToolCallCount }),
+            MessageEvent e => JsonSerializer.Serialize(new { role = e.Role.ToString().ToLowerInvariant(), text = e.Text, isAssistant = e.IsAssistant }),
+            ToolErrorEvent e => JsonSerializer.Serialize(new { toolName = e.ToolName, toolCallId = e.ToolCallId, error = e.Error, cancelled = e.Cancelled }),
+            PermissionRequestEvent e => JsonSerializer.Serialize(new
+            {
+                toolName = e.ToolName,
+                argumentsJson = e.ArgumentsJson,
+                decision = e.Decision.ToString().ToLowerInvariant(),
+                ruleSource = e.RuleSource,
+                prompt = e.Prompt,
+                reason = e.Reason
+            }),
+            InstructionsEvent e => JsonSerializer.Serialize(new
+            {
+                sections = e.Sections.Select(section => new { source = section.Source, text = section.Text, enabled = section.Enabled }).ToArray(),
+                overridePrompt = e.OverridePrompt
+            }),
             _ => "{}"
         };
         var eventObject = new JsJsonParser(engine).Parse(json).AsObject();
@@ -584,6 +604,43 @@ public sealed class ScriptExtension : IExtension, IDisposable
                     headers.Headers.Clear();
                     foreach (var key in headerObject.AsObject().GetOwnPropertyKeys()) headers.Headers[key.ToString()] = headerObject.AsObject().Get(key).ToString();
                 }
+                break;
+            case PermissionRequestEvent permission:
+                var decisionValue = JsStringOrNull(value.Get("decision"));
+                if (decisionValue != null && Enum.TryParse<PermissionDecision>(decisionValue, true, out var decision))
+                {
+                    permission.Decision = decision;
+                }
+
+                permission.Prompt = JsStringOrNull(value.Get("prompt"));
+                permission.Reason = JsStringOrNull(value.Get("reason"));
+                break;
+            case MessageEvent message:
+                message.Text = JsStringOrNull(value.Get("text")) ?? message.Text;
+                break;
+            case SessionBeforeSwitchEvent sessionSwitch:
+                sessionSwitch.CancelReason = JsStringOrNull(value.Get("cancelReason"));
+                break;
+            case InstructionsEvent instructions:
+                instructions.OverridePrompt = JsStringOrNull(value.Get("overridePrompt"));
+                var sectionValues = value.Get("sections");
+                if (sectionValues.IsArray())
+                {
+                    var updated = sectionValues.AsArray().ToArray();
+                    for (var index = 0; index < instructions.Sections.Count && index < updated.Length; index++)
+                    {
+                        var item = updated[index];
+                        if (!item.IsObject())
+                        {
+                            continue;
+                        }
+
+                        instructions.Sections[index].Text = JsStringOrNull(item.AsObject().Get("text"));
+                        var enabled = item.AsObject().Get("enabled");
+                        instructions.Sections[index].Enabled = !enabled.IsBoolean() || enabled.AsBoolean();
+                    }
+                }
+
                 break;
         }
     }

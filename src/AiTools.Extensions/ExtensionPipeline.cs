@@ -606,13 +606,19 @@ public sealed class ExtensionPipeline : IAsyncDisposable
 
 
     /// <summary>分发轮次结束事件。</summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="text">本轮助手文本。</param>
+    /// <param name="toolCallCount">本轮工具调用次数。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <param name="turnIndex">本轮序号（从 0 开始）。</param>
     public async Task<TurnEndEvent> PublishTurnEndAsync(
         CommandContext context,
         string text,
         int toolCallCount,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int turnIndex = 0)
     {
-        var endEvent = new TurnEndEvent { Text = text, ToolCallCount = toolCallCount };
+        var endEvent = new TurnEndEvent { Text = text, ToolCallCount = toolCallCount, TurnIndex = turnIndex };
         var dispatched = await Runtime.DispatchAsync(
             ExtensionEvent.TurnEnd,
             endEvent,
@@ -622,6 +628,133 @@ public sealed class ExtensionPipeline : IAsyncDisposable
 
         return dispatched as TurnEndEvent ?? endEvent;
     }
+
+    /// <summary>分发 <c>agent_start</c>：一次 agent 循环开始。只通知。</summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="model">模型名。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishAgentStartAsync(CommandContext context, string model, CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(
+            ExtensionEvent.AgentStart,
+            new AgentLifecycleEvent { Model = model },
+            context,
+            cancellationToken);
+
+    /// <summary>分发 <c>agent_end</c>：一次 agent 循环正常运行结束。只通知。</summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishAgentEndAsync(CommandContext context, CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(
+            ExtensionEvent.AgentEnd,
+            new AgentLifecycleEvent(),
+            context,
+            cancellationToken);
+
+    /// <summary>分发 <c>agent_failed</c>：一次 agent 循环因取消或异常结束。只通知。</summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="error">失败原因。</param>
+    /// <param name="cancelled">是否因用户取消而结束。</param>
+    /// <param name="partialText">已产出的部分文本。</param>
+    /// <param name="toolCallCount">已完成的工具调用次数。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishAgentFailedAsync(
+        CommandContext context,
+        string error,
+        bool cancelled,
+        string? partialText = null,
+        int toolCallCount = 0,
+        CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(
+            ExtensionEvent.AgentFailed,
+            new AgentFailedEvent
+            {
+                Error = error,
+                Cancelled = cancelled,
+                PartialText = partialText ?? string.Empty,
+                ToolCallCount = toolCallCount
+            },
+            context,
+            cancellationToken);
+
+    /// <summary>分发 <c>turn_start</c>：一次模型轮次开始。只通知。</summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="turnIndex">本轮序号（从 0 开始）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishTurnStartAsync(CommandContext context, int turnIndex, CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(
+            ExtensionEvent.TurnStart,
+            new AgentLifecycleEvent { TurnIndex = turnIndex },
+            context,
+            cancellationToken);
+
+    /// <summary>分发 <c>message_end</c>：一条消息定稿。返回改写后的助手文本。</summary>
+    /// <remarks>助手消息的改写结果由宿主决定是否回写历史；用户与工具结果的改写通常只用于观察。</remarks>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="role">消息角色。</param>
+    /// <param name="text">消息正文。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>改写后的正文；没有处理器改写时与 <paramref name="text"/> 相同。</returns>
+    public async Task<string> PublishMessageEndAsync(
+        CommandContext context,
+        ChatRole role,
+        string text,
+        CancellationToken cancellationToken = default)
+    {
+        var messageEvent = new MessageEvent { Role = role, Text = text };
+        var dispatched = await Runtime.DispatchAsync(
+            ExtensionEvent.MessageEnd,
+            messageEvent,
+            context,
+            failClosed: messageEvent,
+            cancellationToken).ConfigureAwait(false);
+
+        return (dispatched as MessageEvent ?? messageEvent).Text;
+    }
+
+    /// <summary>
+    /// 分发 <c>instruction_loaded</c>：共享指令并入系统提示前。返回拼接后的指令文本（全部被丢弃时为空串）。
+    /// </summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="sections">待并入的指令条目（就地改写）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>拼接后的指令文本；全部被丢弃时为空串。</returns>
+    public async Task<string> PublishInstructionsLoadedAsync(
+        CommandContext context,
+        IList<InstructionsSection> sections,
+        CancellationToken cancellationToken = default)
+    {
+        var instructions = new InstructionsEvent();
+        foreach (var section in sections)
+        {
+            instructions.Sections.Add(section);
+        }
+
+        var dispatched = await Runtime.DispatchAsync(
+            ExtensionEvent.InstructionsLoaded,
+            instructions,
+            context,
+            failClosed: instructions,
+            cancellationToken).ConfigureAwait(false);
+
+        return (dispatched as InstructionsEvent ?? instructions).Build();
+    }
+
+    /// <summary>分发 <c>tool_error</c>：工具执行失败。只通知。</summary>    /// <param name="context">命令上下文。</param>
+    /// <param name="toolName">工具名。</param>
+    /// <param name="error">失败原因。</param>
+    /// <param name="toolCallId">工具调用 ID。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishToolErrorAsync(
+        CommandContext context,
+        string toolName,
+        string error,
+        string? toolCallId = null,
+        CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(
+            ExtensionEvent.ToolError,
+            new ToolErrorEvent { ToolName = toolName, ToolCallId = toolCallId, Error = error },
+            context,
+            cancellationToken);
 
     /// <summary>
     /// 构建暴露给模型的工具：扩展工具（按装载结果声明、曝光级别与准备器改写）。
@@ -645,18 +778,59 @@ public sealed class ExtensionPipeline : IAsyncDisposable
     /// <param name="argumentsJson">调用参数的 JSON 文本。</param>
     /// <param name="execute">实际执行体。</param>
     /// <param name="confirm">Ask 决策的确认回调；null 表示拒绝。</param>
+    /// <param name="context">命令上下文；提供时会先分发 <c>permission_request</c>，让扩展接管判定。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     public Task<string>? GuardToolAsync(
         string toolName,
         string argumentsJson,
         Func<Task<string>> execute,
-        Func<string, Task<bool>>? confirm)
+        Func<string, Task<bool>>? confirm,
+        CommandContext? context = null,
+        CancellationToken cancellationToken = default)
     {
         if (Options.Permissions == null)
         {
             return null;
         }
 
-        return PermissionGate.GuardAsync(Options.Permissions, toolName, argumentsJson, execute, confirm);
+        return PermissionGate.GuardAsync(
+            Options.Permissions,
+            toolName,
+            argumentsJson,
+            execute,
+            confirm,
+            context == null ? null : name => ResolvePermissionAsync(context, name, argumentsJson, cancellationToken));
+    }
+
+    /// <summary>分发 <c>permission_request</c> 并读出扩展给出的结论；扩展未改写时返回 null。</summary>
+    private async Task<PermissionResolution?> ResolvePermissionAsync(
+        CommandContext context,
+        string toolName,
+        string argumentsJson,
+        CancellationToken cancellationToken)
+    {
+        var request = new PermissionRequestEvent { ToolName = toolName, ArgumentsJson = argumentsJson };
+        var dispatched = await Runtime.DispatchAsync(
+            ExtensionEvent.PermissionRequest,
+            request,
+            context,
+            failClosed: request,
+            cancellationToken).ConfigureAwait(false);
+
+        var resolved = dispatched as PermissionRequestEvent ?? request;
+        if (resolved.Decision == PermissionDecision.Ask &&
+            string.IsNullOrEmpty(resolved.Reason) &&
+            string.IsNullOrEmpty(resolved.Prompt))
+        {
+            return null;
+        }
+
+        return new PermissionResolution
+        {
+            Decision = resolved.Decision,
+            Reason = resolved.Reason,
+            Prompt = resolved.Prompt
+        };
     }
 
     /// <summary>整体替换激活的工具集合；未登记的名字被忽略。返回集合是否发生变化。</summary>

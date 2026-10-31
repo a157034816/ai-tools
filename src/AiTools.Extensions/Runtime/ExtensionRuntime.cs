@@ -923,12 +923,17 @@ public sealed class ExtensionRuntime
     /// <param name="context">命令上下文（用于事件分发）。</param>
     /// <param name="parentToolName">发起调用的工具名；用于检查父工具声明的可达范围。</param>
     /// <param name="cancellationToken">取消令牌。</param>
+    /// <param name="onUpdate">
+    /// 可选的增量输出回调（对应 <see cref="ExtensionEvent.ToolExecutionUpdate"/>）。
+    /// 工具经 <see cref="ToolContext.ReportProgress"/> 上报；为 null 时丢弃。
+    /// </param>
     public async Task<ExtensionToolResult> ExecuteToolAsync(
         string name,
         string argumentsJson,
         CommandContext context,
         string? parentToolName = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<ToolExecutionEvent, Task>? onUpdate = null)
     {
         var tool = TryGetTool(name);
         if (tool == null)
@@ -975,6 +980,7 @@ public sealed class ExtensionRuntime
 
         string text;
         var isError = false;
+        string? failure = null;
         try
         {
             var toolContext = new ToolContext
@@ -987,7 +993,16 @@ public sealed class ExtensionRuntime
                 Ui = context.Ui,
                 EntryStore = context.EntryStore,
                 CallContext = context,
-                CallerToolName = name
+                CallerToolName = name,
+                ReportProgress = onUpdate == null
+                    ? null
+                    : partial => onUpdate(new ToolExecutionEvent
+                    {
+                        ToolName = name,
+                        ToolCallId = call.Id,
+                        ArgumentsJson = call.ArgumentsJson,
+                        PartialOutput = partial
+                    })
             };
 
             text = await tool.Execute(
@@ -1003,11 +1018,28 @@ public sealed class ExtensionRuntime
         {
             text = "{\"error\":" + System.Text.Json.JsonSerializer.Serialize(ex.Message) + "}";
             isError = true;
+            failure = ex.Message;
         }
 
         var resultEvent = new ToolResultEvent { ToolName = name, Text = text, IsError = isError };
         var transformed = await DispatchAsync(ExtensionEvent.ToolResult, resultEvent, context, failClosed: resultEvent, cancellationToken).ConfigureAwait(false);
         var final = transformed as ToolResultEvent ?? resultEvent;
+
+        if (isError)
+        {
+            // 工具失败是独立时机（对应 Claude Code 的 PostToolUseFailure）：只在通知路径上分发，
+            // 结果文本已由 tool_result 定稿，这里不参与改写。
+            await PublishAsync(
+                ExtensionEvent.ToolError,
+                new ToolErrorEvent
+                {
+                    ToolName = name,
+                    ToolCallId = call.Id,
+                    Error = failure ?? final.Text
+                },
+                context,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         return new ExtensionToolResult
         {
@@ -1199,7 +1231,7 @@ public sealed class ExtensionRuntime
         => string.Equals(tool.ExtensionName, RuntimeOwner, StringComparison.Ordinal);
 
     /// <summary>
-    /// 工具是否可被 <see cref="ExecuteToolAsync(string, string, CommandContext, string?, CancellationToken)"/> 调用：
+    /// 工具是否可被 <see cref="ExecuteToolAsync(string, string, CommandContext, string?, CancellationToken, Func{ToolExecutionEvent, Task}?)"/> 调用：
     /// <c>Direct</c> 需在激活集合中（停用后不可达），<c>Codemode</c>/<c>Deferred</c> 登记即可调用，
     /// <c>ModelOnly</c> 与 <c>Hidden</c> 永不可调用。
     /// </summary>
