@@ -54,6 +54,15 @@ public sealed class AiToolsWpfOptions
     /// <summary>对话页是否在每轮结束后自动保存会话。默认为 true。</summary>
     public bool AutoSaveConversations { get; set; } = true;
 
+    /// <summary>
+    /// 上下文压缩配置。默认在估算 token 达到模型窗口 90% 时自动压缩到 50%，
+    /// 并至少保留最近 2 个用户轮次。
+    /// </summary>
+    public AiTools.Core.Chat.CompactionOptions Compaction { get; set; } = new();
+
+    /// <summary>可选的自定义摘要器；null 时复用当前会话模型生成摘要。</summary>
+    public AiTools.Core.Chat.IContextSummarizer? ContextSummarizer { get; set; }
+
     /// <summary>是否启用可编程扩展（<c>/goal</c>、<c>/plan</c> 等）。默认为 true。</summary>
     public bool EnableExtensions { get; set; } = true;
 

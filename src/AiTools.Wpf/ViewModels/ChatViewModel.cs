@@ -138,6 +138,8 @@ public sealed class ChatViewModel : ObservableObject
     private ProviderChoice? _selectedProvider;
     private ModelChoice? _selectedModel;
     private ConversationRecord? _currentConversation;
+    private AiTools.Core.Sessions.ConversationCompaction? _compaction;
+    private readonly AiTools.Core.Chat.ContextCompactionService _compactionService;
     private bool _isResumePickerOpen;
     private bool _isLoadingConversations;
     private string _conversationTitle = "新对话";
@@ -156,6 +158,7 @@ public sealed class ChatViewModel : ObservableObject
     {
         _syncContext = SynchronizationContext.Current;
         _dispatcher = Application.Current?.Dispatcher;
+        _compactionService = new AiTools.Core.Chat.ContextCompactionService(AiToolsWpf.Options.ContextSummarizer);
 
         SendCommand = new AsyncRelayCommand(SendAsync, () => CanSend);
         StopCommand = new RelayCommand(Stop, () => IsBusy);
@@ -692,6 +695,7 @@ public sealed class ChatViewModel : ObservableObject
         {
             Messages.Clear();
             _history.Clear();
+            _compaction = null;
             _baselineMessageCount = 0;
             _lastTurnRolledBack = false;
             _turnIndex = 0;
@@ -728,6 +732,7 @@ public sealed class ChatViewModel : ObservableObject
         {
             Messages.Clear();
             _history.Clear();
+            _compaction = null;
             _baselineMessageCount = 0;
             _lastTurnRolledBack = false;
             _currentConversation = null;
@@ -962,6 +967,7 @@ public sealed class ChatViewModel : ObservableObject
         ("new", "开始一个新对话", null),
         ("clear", "清空当前对话", null),
         ("settings", "打开设置页", null),
+        ("compact", "压缩当前上下文（摘要早期对话）", null),
         ("help", "列出可用命令", "[关键字]"),
         ("output-style", "查看或切换输出风格", "[名称]")
     };
@@ -1029,6 +1035,10 @@ public sealed class ChatViewModel : ObservableObject
 
             case "output-style":
                 ShowOutputStyles(arguments);
+                return true;
+
+            case "compact":
+                _ = CompactAsync();
                 return true;
 
             case "settings":
@@ -1627,6 +1637,28 @@ public sealed class ChatViewModel : ObservableObject
             }
 
             var toolArray = tools.ToArray();
+
+            // 扩展可以注册虚拟模型（路由）与 HTTP 观察器（provider 级钩子）。
+            var router = _pipeline == null
+                ? null
+                : new AiTools.Wpf.Extensions.ExtensionProviderRouter(_pipeline.Runtime, AiToolsWpf.Options.ProviderFactory);
+            var observer = _pipeline?.CreateHttpObserver(CreateExtensionContext);
+
+            var client = router != null
+                ? router.CreateChatClient(provider, model.Id, observer)
+                : AiToolsWpf.CreateChatClient(provider);
+
+            // 上下文压缩：达到模型窗口 90% 时先摘要再发请求；扩展可取消或直接提供摘要。
+            historySnapshot = (await ApplyCompactionAsync(
+                client,
+                model,
+                historySnapshot,
+                systemPrompt,
+                toolArray,
+                force: false,
+                reason: "threshold",
+                token).ConfigureAwait(false)).ToList();
+
             ChatRequest request = new()
             {
                 Model = model.Id,
@@ -1651,16 +1683,6 @@ public sealed class ChatViewModel : ObservableObject
                     request = custom;
                 }
             }
-
-            // 扩展可以注册虚拟模型（路由）与 HTTP 观察器（provider 级钩子）。
-            var router = _pipeline == null
-                ? null
-                : new AiTools.Wpf.Extensions.ExtensionProviderRouter(_pipeline.Runtime, AiToolsWpf.Options.ProviderFactory);
-            var observer = _pipeline?.CreateHttpObserver(CreateExtensionContext);
-
-            var client = router != null
-                ? router.CreateChatClient(provider, model.Id, observer)
-                : AiToolsWpf.CreateChatClient(provider);
 
             async Task<string> InvokeToolAsync(ToolCall call, CancellationToken cancellationToken)
             {
@@ -2282,7 +2304,6 @@ public sealed class ChatViewModel : ObservableObject
         {
             return $"{usage.InputTokens.Value}→{usage.OutputTokens.Value} tokens";
         }
-
         if (usage.InputTokens.HasValue)
         {
             return $"输入 {usage.InputTokens.Value} tokens";
@@ -2294,6 +2315,233 @@ public sealed class ChatViewModel : ObservableObject
         }
 
         return usage.TotalTokens.HasValue ? $"共 {usage.TotalTokens.Value} tokens" : null;
+    }
+
+    // ------------------------------------------------------------------
+    // 上下文压缩
+    // ------------------------------------------------------------------
+
+    /// <summary>按模型配置解析上下文窗口：模型条目显式配置优先于推断。</summary>
+    private int ResolveContextWindow(AiTools.Configuration.ModelConfig model)
+    {
+        var options = AiToolsWpf.Options.Compaction;
+        return AiTools.Core.Chat.ContextWindows.Resolve(model.Id, model.ContextWindow ?? options?.ContextWindow);
+    }
+
+    /// <summary>把压缩状态套用到消息列表，得到模型实际看到的视图。</summary>
+    private IReadOnlyList<ChatMessage> ApplyCompactionView(IReadOnlyList<ChatMessage> messages)
+    {
+        var compaction = _compaction;
+        if (compaction == null || !compaction.IsValidFor(messages.Count))
+        {
+            // 历史被替换或缩短（例如恢复了旧对话），旧摘要不再对应任何消息。
+            return messages;
+        }
+
+        return AiTools.Core.Chat.CompactionView.Apply(messages, compaction);
+    }
+
+    /// <summary>
+    /// 在发请求前按需压缩。返回折叠后的消息；压缩失败时保持原样继续本轮，
+    /// 避免因摘要故障阻断对话。成功压缩后提示气泡随下一轮消息出现。
+    /// </summary>
+    private async Task<IReadOnlyList<ChatMessage>> ApplyCompactionAsync(
+        IChatClient client,
+        AiTools.Configuration.ModelConfig model,
+        IReadOnlyList<ChatMessage> messages,
+        string? systemPrompt,
+        IReadOnlyList<ToolDefinition> tools,
+        bool force,
+        string reason,
+        CancellationToken token)
+    {
+        var options = AiToolsWpf.Options.Compaction;
+        if (options == null || !options.Enabled)
+        {
+            return ApplyCompactionView(messages);
+        }
+
+        var contextWindow = ResolveContextWindow(model);
+        var current = _compaction != null && _compaction.IsValidFor(messages.Count) ? _compaction : null;
+        var compacted = ApplyCompactionView(messages);
+        var fixedTokens = AiTools.Core.Chat.TokenEstimator.EstimateText(systemPrompt)
+                          + AiTools.Core.Chat.TokenEstimator.EstimateTools(tools);
+
+        var request = new AiTools.Core.Chat.CompactionRequest
+        {
+            Client = client,
+            Model = model.Id,
+            Messages = messages,
+            Current = current,
+            FixedTokens = fixedTokens,
+            ContextWindow = contextWindow,
+            Options = options,
+            Force = force,
+            Reason = reason,
+            OnBefore = context => PublishPreCompactAsync(model, context, token),
+            OnAfter = result => PublishPostCompactAsync(model, result),
+            OnFailed = failure => PublishCompactFailedAsync(model, failure)
+        };
+
+        var result = await _compactionService.CompactAsync(request, token).ConfigureAwait(false);
+        if (result == null)
+        {
+            return compacted;
+        }
+
+        _compaction = result.ToRecord();
+        var message = $"已压缩上下文：{result.CoveredMessageCount} 条消息 → 摘要，" +
+                      $"{result.OriginalTokens:N0} → {result.CompactedTokens:N0} tokens";
+        OnUi(() =>
+        {
+            AppendAssistantBubble(DescribeCompactionNotice(result));
+            SetStatus(message, StatusKind.Info);
+        });
+
+        return ApplyCompactionView(messages);
+    }
+
+    private async Task<AiTools.Core.Chat.CompactionDecision?> PublishPreCompactAsync(
+        AiTools.Configuration.ModelConfig model,
+        AiTools.Core.Chat.CompactionContext context,
+        CancellationToken token)
+    {
+        if (_pipeline == null)
+        {
+            return null;
+        }
+
+        var compactEvent = new AiTools.Extensions.PreCompactEvent
+        {
+            Reason = context.Reason,
+            Model = context.Model,
+            TokenCount = context.TokenCount,
+            ContextWindow = context.ContextWindow,
+            MessageCount = context.MessageCount,
+            PreviousSummary = _compaction?.Summary,
+            CoveredMessageCount = _compaction?.CoveredMessageCount ?? 0
+        };
+
+        var resolved = await _pipeline
+            .PublishPreCompactAsync(CreateExtensionContext(), compactEvent, token)
+            .ConfigureAwait(false);
+
+        if (resolved.Cancelled)
+        {
+            OnUi(() => SetStatus("上下文压缩已取消：" + resolved.CancelReason, StatusKind.Warning));
+            return AiTools.Core.Chat.CompactionDecision.Cancel(resolved.CancelReason!);
+        }
+
+        return string.IsNullOrWhiteSpace(resolved.Summary)
+            ? null
+            : AiTools.Core.Chat.CompactionDecision.WithSummary(resolved.Summary!);
+    }
+
+    private async Task PublishPostCompactAsync(AiTools.Configuration.ModelConfig model, AiTools.Core.Chat.CompactionResult result)
+    {
+        if (_pipeline == null)
+        {
+            return;
+        }
+
+        await _pipeline.PublishPostCompactAsync(
+            CreateExtensionContext(),
+            new AiTools.Extensions.PostCompactEvent
+            {
+                Reason = result.Reason,
+                Model = model.Id,
+                Summary = result.Summary,
+                CoveredMessageCount = result.CoveredMessageCount,
+                OriginalTokenCount = result.OriginalTokens,
+                CompactedTokenCount = result.CompactedTokens
+            },
+            CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task PublishCompactFailedAsync(AiTools.Configuration.ModelConfig model, AiTools.Core.Chat.CompactionFailure failure)
+    {
+        OnUi(() => SetStatus("上下文压缩失败：" + failure.Error, StatusKind.Warning));
+        if (_pipeline == null)
+        {
+            return;
+        }
+
+        await _pipeline.PublishCompactFailedAsync(
+            CreateExtensionContext(),
+            new AiTools.Extensions.CompactFailedEvent { Reason = failure.Reason, Model = model.Id, Error = failure.Error },
+            CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>压缩提示气泡的正文（出现在对话流里，供用户追溯发生了什么）。</summary>
+    private static string DescribeCompactionNotice(AiTools.Core.Chat.CompactionResult result)
+    {
+        var builder = new StringBuilder();
+        builder.Append("📦 上下文已压缩（").Append(DescribeReason(result.Reason)).Append("）：");
+        builder.Append(result.CoveredMessageCount).Append(" 条消息折叠为摘要，");
+        builder.Append(result.OriginalTokens.ToString("N0")).Append(" → ")
+            .Append(result.CompactedTokens.ToString("N0")).Append(" tokens。");
+        builder.AppendLine();
+        builder.AppendLine();
+        builder.Append("> ");
+        builder.Append(result.Summary.Replace("\n", "\n> ").TrimEnd('>', ' '));
+        return builder.ToString();
+    }
+
+    private static string DescribeReason(string reason) => reason switch
+    {
+        "manual" => "手动",
+        "overflow" => "超限兜底",
+        _ => "达到阈值"
+    };
+
+    /// <summary>手动压缩（<c>/compact</c>）。返回是否生成了新摘要。</summary>
+    private async Task<bool> CompactAsync(CancellationToken token = default)
+    {
+        if (IsBusy)
+        {
+            SetStatus("正在生成，请先停止。", StatusKind.Warning);
+            return false;
+        }
+
+        var modelChoice = SelectedModel;
+        var providerChoice = SelectedProvider;
+        if (modelChoice == null || providerChoice == null)
+        {
+            SetStatus("请先选择可用的服务商和模型。", StatusKind.Warning);
+            return false;
+        }
+
+        var messages = _history.Select(entry => entry.Message).ToList();
+        if (messages.Count == 0)
+        {
+            SetStatus("当前没有可压缩的对话。", StatusKind.Info);
+            return false;
+        }
+
+        SetStatus("正在压缩上下文…", StatusKind.Info);
+        // 压缩请求不进入宿主的工具循环，这里只需要基础系统提示做 token 预算。
+        var systemPrompt = string.IsNullOrWhiteSpace(_settings?.SystemPrompt)
+            ? AiToolsWpf.Options.DefaultSystemPrompt
+            : _settings!.SystemPrompt;
+        var client = AiToolsWpf.CreateChatClient(providerChoice.Config);
+        var compacted = await ApplyCompactionAsync(
+            client,
+            modelChoice.Config,
+            messages,
+            systemPrompt,
+            Array.Empty<ToolDefinition>(),
+            force: true,
+            reason: "manual",
+            token).ConfigureAwait(false);
+
+        if (ReferenceEquals(compacted, messages) || compacted.Count == messages.Count && _compaction == null)
+        {
+            SetStatus("当前上下文无需压缩。", StatusKind.Info);
+            return false;
+        }
+
+        await PersistCurrentConversationAsync().ConfigureAwait(false);
+        return true;
     }
 
     private static string DescribeServiceException(AiServiceException exception)
@@ -2362,6 +2610,9 @@ public sealed class ChatViewModel : ObservableObject
         }
 
         _currentConversation = record;
+        _compaction = record.Compaction != null && record.Compaction.IsValidFor(_history.Count)
+            ? record.Compaction
+            : null;
         if (_pipeline != null)
         {
             _pipeline.ImportState(record.ExtensionState);
@@ -2433,6 +2684,15 @@ public sealed class ChatViewModel : ObservableObject
                 {
                     record.ExtensionState = _pipeline.ExportState();
                 }
+
+                record.Compaction = _compaction == null ? null : new AiTools.Core.Sessions.ConversationCompaction
+                {
+                    Summary = _compaction.Summary,
+                    CoveredMessageCount = _compaction.CoveredMessageCount,
+                    CreatedAt = _compaction.CreatedAt,
+                    OriginalTokenCount = _compaction.OriginalTokenCount,
+                    CompactedTokenCount = _compaction.CompactedTokenCount
+                };
 
                 record.Messages = _history
                     .Select(entry =>
