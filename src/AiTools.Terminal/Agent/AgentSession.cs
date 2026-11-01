@@ -34,6 +34,7 @@ public sealed class AgentSession : IAsyncDisposable
     private readonly List<TranscriptMessage> _history = new();
     private readonly List<IChatToolProvider> _registeredProviders = new();
     private readonly object _toolProviderGate = new();
+    private readonly ContextCompactionService _compactionService;
     private AppSettings? _settings;
     private PluginHost? _pluginHost;
     private ExtensionWorkspace? _workspace;
@@ -42,6 +43,7 @@ public sealed class AgentSession : IAsyncDisposable
     private PluginMcpToolProvider? _mcpProvider;
     private Agent.TerminalProviderRouter? _router;
     private ConversationRecord? _conversation;
+    private ConversationCompaction? _compaction;
     private CancellationTokenSource? _turnCancellation;
     private string? _pendingContinuation;
     private int _turnIndex;
@@ -52,6 +54,7 @@ public sealed class AgentSession : IAsyncDisposable
     public AgentSession(TerminalOptions options)
     {
         _options = (options ?? throw new ArgumentNullException(nameof(options))).Normalize();
+        _compactionService = new ContextCompactionService(_options.ContextSummarizer);
         WorkingDirectory = Path.GetFullPath(_options.WorkingDirectory ?? Environment.CurrentDirectory);
     }
 
@@ -126,6 +129,47 @@ public sealed class AgentSession : IAsyncDisposable
 
     /// <summary>获取当前选中的输出风格。</summary>
     public OutputStyleSelection SelectedStyle => _pipeline?.SelectedStyle ?? OutputStyleSelection.None;
+
+    /// <summary>获取当前压缩状态；尚未压缩过时为 null。</summary>
+    public ConversationCompaction? Compaction => _compaction;
+
+    /// <summary>获取估算的上下文占用（token）与窗口，用于状态栏展示。</summary>
+    public (int Used, int Limit) DescribeContextUsage()
+    {
+        lock (_history)
+        {
+            var messages = _history.Select(entry => entry.Message).ToArray();
+            var fixedTokens = TokenEstimator.EstimateText(BuildSystemPrompt(CurrentModel ?? new ModelConfig()));
+            return (TokenEstimator.EstimateMessages(messages), ResolveContextWindow());
+        }
+    }
+
+    /// <summary>手动压缩上下文（<c>/compact</c>）。返回摘要是否生成；未触发时也返回 false。</summary>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public async Task<bool> CompactAsync(CancellationToken cancellationToken = default)
+    {
+        await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (IsBusy)
+            {
+                SetStatus("正在生成，请先按 Esc 停止。");
+                return false;
+            }
+
+            if (CurrentProvider == null || CurrentModel == null)
+            {
+                SetStatus("请先选择可用的服务商和模型。");
+                return false;
+            }
+
+            return await TryCompactAsync(force: true, "manual", cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendGate.Release();
+        }
+    }
 
     /// <summary>
     /// 加载设置、插件、扩展与技能，并决定初始服务商/模型。
@@ -253,6 +297,7 @@ public sealed class AgentSession : IAsyncDisposable
             }
 
             var turnResult = await SendTurnAsync(input, null, cancellationToken).ConfigureAwait(false);
+            turnResult = await RetryAfterOverflowAsync(input, turnResult, cancellationToken).ConfigureAwait(false);
             await DrainContinuationsAsync(cancellationToken).ConfigureAwait(false);
             await PersistAsync().ConfigureAwait(false);
             return turnResult;
@@ -298,6 +343,7 @@ public sealed class AgentSession : IAsyncDisposable
         }
 
         _conversation = null;
+        _compaction = null;
         _turnIndex = 0;
         _pipeline?.Runtime.State.ClearAll();
         _pipeline?.Session.UpdateSessionId(null);
@@ -898,6 +944,25 @@ public sealed class AgentSession : IAsyncDisposable
             }
 
             var toolArray = tools.Select(item => item.Definition).ToArray();
+
+            var observer = _pipeline?.CreateHttpObserver(CreateExtensionContext);
+            var client = _pipeline != null
+                ? _router!.CreateChatClient(provider, model.Id, observer)
+                : _options.ProviderFactory!.CreateChatClient(provider);
+
+            // 上下文压缩：达到模型窗口 90% 时先摘要再发请求；扩展可取消或直接提供摘要。
+            var compactionOutcome = await ApplyCompactionAsync(
+                client,
+                provider,
+                model,
+                historySnapshot,
+                systemPrompt,
+                toolArray,
+                force: false,
+                reason: "threshold",
+                token).ConfigureAwait(false);
+            historySnapshot = compactionOutcome.Messages;
+
             var request = new ChatRequest
             {
                 Model = model.Id,
@@ -906,11 +971,6 @@ public sealed class AgentSession : IAsyncDisposable
                 Tools = toolArray,
                 ToolChoice = toolArray.Length > 0 ? ToolChoice.Auto : null
             };
-
-            var observer = _pipeline?.CreateHttpObserver(CreateExtensionContext);
-            var client = _pipeline != null
-                ? _router!.CreateChatClient(provider, model.Id, observer)
-                : _options.ProviderFactory!.CreateChatClient(provider);
 
             async Task<string> InvokeToolAsync(ToolCall call, CancellationToken toolToken)
             {
@@ -1259,11 +1319,19 @@ public sealed class AgentSession : IAsyncDisposable
                     Text = textBuffer.ToString(),
                     Error = message,
                     ToolCallCount = toolCallCount,
-                    Duration = stopwatch.Elapsed
+                    Duration = stopwatch.Elapsed,
+                    ContextOverflow = IsContextOverflow(ex)
                 }
             });
-            SetStatus("请求失败：" + message);
-            return new TurnResult { Error = message, Text = textBuffer.ToString() };
+            SetStatus(IsContextOverflow(ex)
+                ? "上下文超出模型窗口，请用 /compact 压缩后重试。"
+                : "请求失败：" + message);
+            return new TurnResult
+            {
+                Error = message,
+                Text = textBuffer.ToString(),
+                ContextOverflow = IsContextOverflow(ex)
+            };
         }
         catch (Exception ex)
         {
@@ -1618,6 +1686,14 @@ public sealed class AgentSession : IAsyncDisposable
         {
             var record = _conversation ?? new ConversationRecord();
             record.ExtensionState = _pipeline?.ExportState();
+            record.Compaction = _compaction == null ? null : new ConversationCompaction
+            {
+                Summary = _compaction.Summary,
+                CoveredMessageCount = _compaction.CoveredMessageCount,
+                CreatedAt = _compaction.CreatedAt,
+                OriginalTokenCount = _compaction.OriginalTokenCount,
+                CompactedTokenCount = _compaction.CompactedTokenCount
+            };
             record.Messages = snapshot.Select(entry =>
             {
                 var message = ConversationMessage.FromChatMessage(entry.Message);
@@ -1682,6 +1758,7 @@ public sealed class AgentSession : IAsyncDisposable
 
         _conversation = record;
         Title = string.IsNullOrWhiteSpace(record.Title) ? "新对话" : record.Title;
+        _compaction = record.Compaction;
         _pipeline?.ImportState(record.ExtensionState);
         _pipeline?.Session.UpdateSessionId(record.Id);
 
@@ -1886,6 +1963,292 @@ public sealed class AgentSession : IAsyncDisposable
 
         return usage.TotalTokens.HasValue ? $"共 {usage.TotalTokens.Value} tokens" : null;
     }
+
+    // ------------------------------------------------------------------
+    // 上下文压缩
+    // ------------------------------------------------------------------
+
+    /// <summary>按模型配置解析上下文窗口：模型条目显式配置优先于推断。</summary>
+    private int ResolveContextWindow()
+        => ContextWindows.Resolve(CurrentModel?.Id, CurrentModel?.ContextWindow ?? _options.Compaction.ContextWindow);
+
+    /// <summary>把压缩状态套用到消息列表，得到模型实际看到的视图。</summary>
+    private IReadOnlyList<ChatMessage> ApplyCompactionView(IReadOnlyList<ChatMessage> messages)
+    {
+        var compaction = _compaction;
+        if (compaction == null)
+        {
+            return messages;
+        }
+
+        if (!compaction.IsValidFor(messages.Count))
+        {
+            // 历史被替换或缩短（例如恢复了旧对话），旧摘要不再对应任何消息。
+            return messages;
+        }
+
+        return CompactionView.Apply(messages, compaction);
+    }
+
+    /// <summary>
+    /// 在发请求前按需压缩。返回要发送的消息（已折叠）以及本次是否产生了新摘要。
+    /// 压缩失败时保持原消息并继续本轮，避免因摘要故障阻断对话。
+    /// </summary>
+    private async Task<(IReadOnlyList<ChatMessage> Messages, bool Compacted)> ApplyCompactionAsync(
+        IChatClient client,
+        ProviderConfig provider,
+        ModelConfig model,
+        IReadOnlyList<ChatMessage> messages,
+        string? systemPrompt,
+        IReadOnlyList<ToolDefinition> tools,
+        bool force,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        _ = provider; // 客户端已由调用方创建；这里仅保留签名以便日志扩展。
+        var options = _options.Compaction;
+        if (options == null || !options.Enabled)
+        {
+            return (ApplyCompactionView(messages), false);
+        }
+
+        var contextWindow = ContextWindows.Resolve(model.Id, model.ContextWindow ?? options.ContextWindow);
+
+        // 压缩前先看折叠后的视图：已覆盖的部分不应重复计入 token。
+        var current = _compaction != null && _compaction.IsValidFor(messages.Count) ? _compaction : null;
+        var compacted = CompactionView.Apply(messages, current);
+        var fixedTokens = TokenEstimator.EstimateText(systemPrompt) + TokenEstimator.EstimateTools(tools);
+
+        var request = new CompactionRequest
+        {
+            Client = client,
+            Model = model.Id,
+            Messages = messages,
+            Current = current,
+            FixedTokens = fixedTokens,
+            ContextWindow = contextWindow,
+            Options = options,
+            Force = force,
+            Reason = reason,
+            OnBefore = async context => await PublishPreCompactAsync(model, context, cancellationToken).ConfigureAwait(false),
+            OnAfter = async result => await PublishPostCompactAsync(model, result, cancellationToken).ConfigureAwait(false),
+            OnFailed = async failure => await PublishCompactFailedAsync(model, failure, cancellationToken).ConfigureAwait(false)
+        };
+
+        var result = await _compactionService.CompactAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result == null)
+        {
+            return (compacted, false);
+        }
+
+        _compaction = result.ToRecord();
+        PersistExtensionState();
+        var message = DescribeCompaction(result);
+        Raise(new AgentUpdate
+        {
+            Kind = AgentUpdateKind.Notice,
+            Text = message,
+            NoticeKind = NoticeKind.Info
+        });
+        SetStatus(message);
+        RaiseStateChanged();
+
+        return (ApplyCompactionView(messages), true);
+    }
+
+    private async Task<CompactionDecision?> PublishPreCompactAsync(
+        ModelConfig model,
+        CompactionContext context,
+        CancellationToken cancellationToken)
+    {
+        if (_pipeline == null)
+        {
+            return null;
+        }
+
+        var compactEvent = new PreCompactEvent
+        {
+            Reason = context.Reason,
+            Model = context.Model,
+            TokenCount = context.TokenCount,
+            ContextWindow = context.ContextWindow,
+            MessageCount = context.MessageCount,
+            PreviousSummary = _compaction?.Summary,
+            CoveredMessageCount = _compaction?.CoveredMessageCount ?? 0
+        };
+
+        var resolved = await _pipeline
+            .PublishPreCompactAsync(CreateExtensionContext(), compactEvent, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resolved.Cancelled)
+        {
+            SetStatus(resolved.CancelReason!);
+            return CompactionDecision.Cancel(resolved.CancelReason!);
+        }
+
+        return string.IsNullOrWhiteSpace(resolved.Summary)
+            ? null
+            : CompactionDecision.WithSummary(resolved.Summary!);
+    }
+
+    private async Task PublishPostCompactAsync(ModelConfig model, CompactionResult result, CancellationToken cancellationToken)
+    {
+        if (_pipeline == null)
+        {
+            return;
+        }
+
+        await _pipeline.PublishPostCompactAsync(
+            CreateExtensionContext(),
+            new PostCompactEvent
+            {
+                Reason = result.Reason,
+                Model = model.Id,
+                Summary = result.Summary,
+                CoveredMessageCount = result.CoveredMessageCount,
+                OriginalTokenCount = result.OriginalTokens,
+                CompactedTokenCount = result.CompactedTokens
+            },
+            CancellationToken.None).ConfigureAwait(false);
+
+        _ = cancellationToken;
+    }
+
+    private async Task PublishCompactFailedAsync(ModelConfig model, CompactionFailure failure, CancellationToken cancellationToken)
+    {
+        SetStatus("上下文压缩失败：" + failure.Error);
+        if (_pipeline == null)
+        {
+            return;
+        }
+
+        await _pipeline.PublishCompactFailedAsync(
+            CreateExtensionContext(),
+            new CompactFailedEvent { Reason = failure.Reason, Model = model.Id, Error = failure.Error },
+            CancellationToken.None).ConfigureAwait(false);
+
+        _ = cancellationToken;
+    }
+
+    /// <summary>
+    /// 服务商返回上下文超限时压缩一次并重试本轮。估算偏保守时仍可能被服务商判定超限，
+    /// 这条兜底路径保证用户不必手动 <c>/compact</c>。
+    /// </summary>
+    private async Task<TurnResult> RetryAfterOverflowAsync(
+        string prompt,
+        TurnResult result,
+        CancellationToken cancellationToken)
+    {
+        if (result.ContextOverflow == false || result.Cancelled)
+        {
+            return result;
+        }
+
+        if (CurrentProvider == null || CurrentModel == null)
+        {
+            return result;
+        }
+
+        Raise(new AgentUpdate
+        {
+            Kind = AgentUpdateKind.Notice,
+            Text = "服务商报告上下文超限，正在压缩后重试…",
+            NoticeKind = NoticeKind.Warning
+        });
+
+        try
+        {
+            var compacted = await TryCompactAsync(force: true, "overflow", cancellationToken).ConfigureAwait(false);
+            if (!compacted)
+            {
+                return result;
+            }
+
+            return await SendTurnAsync(prompt, null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            SetStatus("压缩后重试失败：" + ex.Message);
+            return result;
+        }
+    }
+
+    /// <summary>手动压缩入口的共用实现。</summary>
+    private async Task<bool> TryCompactAsync(bool force, string reason, CancellationToken cancellationToken)
+    {
+        var provider = CurrentProvider;
+        var model = CurrentModel;
+        if (provider == null || model == null)
+        {
+            return false;
+        }
+
+        IReadOnlyList<ChatMessage> messages;
+        lock (_history)
+        {
+            messages = _history.Select(entry => entry.Message).ToArray();
+        }
+
+        if (messages.Count == 0)
+        {
+            SetStatus("当前没有可压缩的对话。");
+            return false;
+        }
+
+        SetStatus("正在压缩上下文…");
+        var client = _pipeline != null
+            ? _router!.CreateChatClient(provider, model.Id, _pipeline.CreateHttpObserver(CreateExtensionContext))
+            : _options.ProviderFactory!.CreateChatClient(provider);
+
+        var compaction = await ApplyCompactionAsync(
+            client,
+            provider,
+            model,
+            messages,
+            BuildSystemPrompt(model),
+            Array.Empty<ToolDefinition>(),
+            force,
+            reason,
+            cancellationToken).ConfigureAwait(false);
+
+        if (!compaction.Compacted)
+        {
+            SetStatus("当前上下文无需压缩。");
+            return false;
+        }
+
+        await PersistAsync().ConfigureAwait(false);
+        return true;
+    }
+
+    private static bool IsContextOverflow(AiServiceException exception)
+    {
+        var code = exception.ErrorCode ?? string.Empty;
+        if (code.IndexOf("context", StringComparison.OrdinalIgnoreCase) >= 0 &&
+            (code.IndexOf("length", StringComparison.OrdinalIgnoreCase) >= 0 ||
+             code.IndexOf("window", StringComparison.OrdinalIgnoreCase) >= 0 ||
+             code.IndexOf("token", StringComparison.OrdinalIgnoreCase) >= 0))
+        {
+            return true;
+        }
+
+        var message = exception.Message ?? string.Empty;
+        return message.IndexOf("context length", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               message.IndexOf("context window", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               message.IndexOf("maximum context", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               message.IndexOf("too many tokens", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               message.IndexOf("prompt is too long", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               message.IndexOf("input is too long", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static string DescribeCompaction(CompactionResult result)
+        => $"已压缩上下文：{result.CoveredMessageCount} 条消息 → 摘要，" +
+           $"{result.OriginalTokens:N0} → {result.CompactedTokens:N0} tokens";
 
     private static string DescribeServiceException(AiServiceException exception)
     {

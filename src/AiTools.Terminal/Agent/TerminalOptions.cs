@@ -98,6 +98,15 @@ public sealed class TerminalOptions
     /// <summary>是否自动保存会话。默认 true。</summary>
     public bool AutoSaveConversations { get; set; } = true;
 
+    /// <summary>
+    /// 上下文压缩配置。默认在估算 token 达到模型窗口 90% 时自动压缩到 50%，
+    /// 并至少保留最近 2 个用户轮次。
+    /// </summary>
+    public AiTools.Core.Chat.CompactionOptions Compaction { get; set; } = new();
+
+    /// <summary>可选的自定义摘要器；null 时复用当前会话模型生成摘要。</summary>
+    public AiTools.Core.Chat.IContextSummarizer? ContextSummarizer { get; set; }
+
     /// <summary>宿主注册的工具 provider。</summary>
     public IReadOnlyList<IChatToolProvider> ToolProviders { get; set; } = Array.Empty<IChatToolProvider>();
 

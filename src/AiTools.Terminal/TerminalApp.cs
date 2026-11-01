@@ -931,6 +931,7 @@ public sealed class TerminalApp : IAsyncDisposable
         _commands.Add(SlashCommand.Local("clear", "清空当前会话（不保存）", ClearAsync));
         _commands.Add(SlashCommand.Local("copy", "复制当前会话到剪贴板（支持 --last 只复制最后一条回复）", CopyAsync));
         _commands.Add(SlashCommand.Local("status", "显示会话与扩展状态", StatusAsync));
+        _commands.Add(SlashCommand.Local("compact", "压缩当前上下文（摘要早期对话）", CompactAsync));
         _commands.Add(SlashCommand.Local("output-style", "查看或切换输出风格", OutputStyleAsync));
         _commands.Add(SlashCommand.Local("extensions", "列出已加载的扩展、扩展包与插件", ExtensionsAsync));
         _commands.Add(SlashCommand.Local("reasoning", "显示或隐藏推理过程", ReasoningAsync));
@@ -999,6 +1000,14 @@ public sealed class TerminalApp : IAsyncDisposable
     {
         ShowHelp();
         return Task.CompletedTask;
+    }
+
+    private async Task CompactAsync(CommandArguments args, CancellationToken cancellationToken)
+    {
+        var (used, limit) = _session.DescribeContextUsage();
+        _statusOverride = $"上下文 {used:N0} / {limit:N0} tokens，正在压缩…";
+        _renderer.Invalidate();
+        await _session.CompactAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task SelectModelAsync(CommandArguments args, CancellationToken cancellationToken)

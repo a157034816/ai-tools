@@ -108,6 +108,9 @@ public sealed class TurnResult
     /// <summary>获取是否被用户取消。</summary>
     public bool Cancelled { get; init; }
 
+    /// <summary>获取是否因上下文超限而失败（宿主可据此压缩后重试）。</summary>
+    public bool ContextOverflow { get; init; }
+
     /// <summary>获取是否成功完成。</summary>
     public bool Succeeded => Error == null && !Cancelled;
 }
