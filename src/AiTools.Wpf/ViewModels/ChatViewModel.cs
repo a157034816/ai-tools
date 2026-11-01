@@ -140,6 +140,7 @@ public sealed class ChatViewModel : ObservableObject
     private ConversationRecord? _currentConversation;
     private AiTools.Core.Sessions.ConversationCompaction? _compaction;
     private readonly AiTools.Core.Chat.ContextCompactionService _compactionService;
+    private readonly AiTools.Core.Chat.PromptCacheWarmer? _cacheWarmer;
     private bool _isResumePickerOpen;
     private bool _isLoadingConversations;
     private string _conversationTitle = "新对话";
@@ -159,6 +160,13 @@ public sealed class ChatViewModel : ObservableObject
         _syncContext = SynchronizationContext.Current;
         _dispatcher = Application.Current?.Dispatcher;
         _compactionService = new AiTools.Core.Chat.ContextCompactionService(AiToolsWpf.Options.ContextSummarizer);
+        if (AiToolsWpf.Options.PromptCache.WarmingEnabled)
+        {
+            _cacheWarmer = new AiTools.Core.Chat.PromptCacheWarmer(
+                AiToolsWpf.Options.PromptCacheWarming,
+                DecideCacheWarmingAsync);
+            _cacheWarmer.Warmed += OnCacheWarmed;
+        }
 
         SendCommand = new AsyncRelayCommand(SendAsync, () => CanSend);
         StopCommand = new RelayCommand(Stop, () => IsBusy);
@@ -699,6 +707,7 @@ public sealed class ChatViewModel : ObservableObject
             _baselineMessageCount = 0;
             _lastTurnRolledBack = false;
             _turnIndex = 0;
+            _cacheWarmer?.Cancel();
             RaiseCommandStates();
             SetStatus(HasUsableProvider ? "对话已清空。" : "尚未配置可用的服务商，请先打开设置添加。",
                 HasUsableProvider ? StatusKind.Info : StatusKind.Warning);
@@ -737,6 +746,7 @@ public sealed class ChatViewModel : ObservableObject
             _lastTurnRolledBack = false;
             _currentConversation = null;
             _turnIndex = 0;
+            _cacheWarmer?.Cancel();
             _pipeline?.Runtime.State.ClearAll();
             ConversationTitle = "新对话";
             IsResumePickerOpen = false;
@@ -858,6 +868,7 @@ public sealed class ChatViewModel : ObservableObject
                 ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
             });
 
+            _cacheWarmer?.Cancel();
             await PublishSessionSwitchedAsync("resume", previousId).ConfigureAwait(false);
             RestoreSelection(record);
         }
@@ -938,6 +949,7 @@ public sealed class ChatViewModel : ObservableObject
                 ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
             });
 
+            _cacheWarmer?.Cancel();
             await PublishSessionSwitchedAsync("fork", previousId).ConfigureAwait(false);
             RaiseCommandStates();
         }
@@ -1532,6 +1544,8 @@ public sealed class ChatViewModel : ObservableObject
                 await _pipeline.PublishTurnStartAsync(CreateExtensionContext(), turnIndex, token).ConfigureAwait(false);
             }
 
+            _cacheWarmer?.OnRunStarted();
+
             // 技能 provider 可能晚于页面初始化才可用（扩展在会话期间登记技能），
             // 因此在构建工具表之前补一次注册，保证 load_skill 与技能清单同步出现。
             _skillCatalogProvider ??= AiToolsWpf.PluginSkillProvider;
@@ -1641,7 +1655,10 @@ public sealed class ChatViewModel : ObservableObject
             // 扩展可以注册虚拟模型（路由）与 HTTP 观察器（provider 级钩子）。
             var router = _pipeline == null
                 ? null
-                : new AiTools.Wpf.Extensions.ExtensionProviderRouter(_pipeline.Runtime, AiToolsWpf.Options.ProviderFactory);
+                : new AiTools.Wpf.Extensions.ExtensionProviderRouter(
+                    _pipeline.Runtime,
+                    AiToolsWpf.Options.ProviderFactory,
+                    AiToolsWpf.Options.PromptCache);
             var observer = _pipeline?.CreateHttpObserver(CreateExtensionContext);
 
             var client = router != null
@@ -1683,6 +1700,10 @@ public sealed class ChatViewModel : ObservableObject
                     request = custom;
                 }
             }
+
+            // 预热要在请求期间就开始跑（长工具循环正是缓存会过期的时段），
+            // 此时还没有真实用量，先用估算值安排刷新；响应回来后再用实际值刷新一次。
+            TrackPromptCacheBeforeRequest(client, provider, request, systemPrompt, toolArray);
 
             async Task<string> InvokeToolAsync(ToolCall call, CancellationToken cancellationToken)
             {
@@ -1892,6 +1913,9 @@ public sealed class ChatViewModel : ObservableObject
                     turnIndex).ConfigureAwait(false);
             }
 
+            // 预热器据此刷新提示缓存：轮内按缓存寿命重放，避免长工具循环后过期。
+            TrackPromptCache(client, provider, request, response.Usage);
+
             var streamedText = buffer.SnapshotText();
             var streamedReasoning = buffer.SnapshotReasoning();
 
@@ -1999,6 +2023,8 @@ public sealed class ChatViewModel : ObservableObject
         }
         finally
         {
+            // 无论成功、取消还是失败，本轮都已结束：Streaming 模式据此停止预热。
+            _cacheWarmer?.OnRunSettled();
             stopwatch.Stop();
             try
             {
@@ -2291,6 +2317,113 @@ public sealed class ChatViewModel : ObservableObject
             message.AddToolCall(display);
             ScrollToEndRequested?.Invoke(this, EventArgs.Empty);
         });
+    }
+
+    // ------------------------------------------------------------------
+    // 提示缓存预热
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// 请求发出前先用估算的提示规模安排预热。真实用量只有响应回来才知道，
+    /// 但轮内预热恰恰要在"等响应与跑工具"这段时间生效，所以先跑起来。
+    /// </summary>
+    private void TrackPromptCacheBeforeRequest(
+        AiTools.Abstractions.IChatClient client,
+        ProviderConfig provider,
+        ChatRequest request,
+        string? systemPrompt,
+        IReadOnlyList<ToolDefinition> tools)
+    {
+        if (_cacheWarmer == null || !AiToolsWpf.Options.PromptCache.Enabled)
+        {
+            return;
+        }
+
+        var promptTokens = AiTools.Core.Chat.TokenEstimator.EstimateText(systemPrompt)
+                           + AiTools.Core.Chat.TokenEstimator.EstimateTools(tools)
+                           + AiTools.Core.Chat.TokenEstimator.EstimateMessages(request.Messages);
+
+        TrackPromptCache(client, provider, request, promptTokens);
+    }
+
+    /// <summary>
+    /// 记录最近一次真实请求，交给预热器按缓存寿命刷新。
+    /// 只有可缓存的模型才跟踪；其它请求会停止已有预热（前缀已改变）。
+    /// </summary>
+    private void TrackPromptCache(
+        AiTools.Abstractions.IChatClient client,
+        ProviderConfig provider,
+        ChatRequest request,
+        Usage? usage)
+        => TrackPromptCache(
+            client,
+            provider,
+            request,
+            AiTools.Core.Chat.PromptCacheAccounting.GetPromptTokens(client.ProviderName, usage));
+
+    /// <summary>记录最近一次真实请求（已知提示规模）。</summary>
+    private void TrackPromptCache(
+        AiTools.Abstractions.IChatClient client,
+        ProviderConfig provider,
+        ChatRequest request,
+        int promptTokens)
+    {
+        if (_cacheWarmer == null)
+        {
+            return;
+        }
+
+        var policy = AiToolsWpf.Options.PromptCache.Enabled
+            ? AiTools.Core.Chat.PromptCachePolicyCatalog.Resolve(provider.Protocol, request.Model)
+            : AiTools.Core.Chat.PromptCachePolicy.None;
+
+        _cacheWarmer.Track(
+            new AiTools.Core.Chat.PromptCacheWarmRequest
+            {
+                Client = client,
+                Request = request,
+                Policy = policy,
+                PromptTokens = promptTokens
+            },
+            () => string.Equals(SelectedModel?.Config.Id, request.Model, StringComparison.Ordinal));
+    }
+
+    /// <summary>预热结论交给扩展改写；无扩展管道时使用内置结论。</summary>
+    private async Task<AiTools.Core.Chat.CacheWarmingAction> DecideCacheWarmingAsync(
+        AiTools.Core.Chat.CacheWarmingDecision decision)
+    {
+        if (_pipeline == null)
+        {
+            return decision.Action;
+        }
+
+        var dispatched = await _pipeline.PublishCacheWarmingDecisionAsync(
+            CreateExtensionContext(),
+            new AiTools.Extensions.CacheWarmingDecisionEvent
+            {
+                Phase = decision.Phase,
+                Model = decision.Model,
+                PromptTokens = decision.PromptTokens,
+                WarmCost = decision.WarmCost,
+                MissCost = decision.MissCost,
+                ContinuationProbability = decision.ContinuationProbability,
+                ExpectedSavings = decision.ExpectedSavings,
+                EconomicsAvailable = decision.EconomicsAvailable,
+                Action = decision.Action == AiTools.Core.Chat.CacheWarmingAction.Warm ? "warm" : "stop"
+            },
+            CancellationToken.None).ConfigureAwait(false);
+
+        return dispatched.IsWarm
+            ? AiTools.Core.Chat.CacheWarmingAction.Warm
+            : AiTools.Core.Chat.CacheWarmingAction.Stop;
+    }
+
+    /// <summary>刷新成功：只更新状态栏，不往对话流里写气泡。</summary>
+    private void OnCacheWarmed(AiTools.Core.Chat.CacheWarmingResult result)
+    {
+        OnUi(() => SetStatus(
+            $"缓存已刷新 · {result.PromptTokens:N0} tokens · {result.Duration.TotalSeconds:0.0}s",
+            StatusKind.Info));
     }
 
     private static string? FormatUsage(Usage? usage)

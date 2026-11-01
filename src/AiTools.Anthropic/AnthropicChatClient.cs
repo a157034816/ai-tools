@@ -36,6 +36,9 @@ public sealed class AnthropicChatClient : IChatClient
     private const string Provider = "anthropic";
     private const int DefaultMaxTokens = 4096;
 
+    /// <summary>Anthropic 1 小时缓存保留所需的 beta 标识。</summary>
+    private const string ExtendedCacheTtlBeta = "extended-cache-ttl-2025-04-11";
+
     private static readonly JsonElement EmptyObjectSchema = CreateElement(writer =>
     {
         writer.WriteStartObject();
@@ -55,6 +58,21 @@ public sealed class AnthropicChatClient : IChatClient
     {
         writer.WriteStartObject();
         writer.WriteString("type", "tool_use");
+        writer.WriteEndObject();
+    });
+
+    private static readonly JsonElement EphemeralCacheControl = CreateElement(writer =>
+    {
+        writer.WriteStartObject();
+        writer.WriteString("type", "ephemeral");
+        writer.WriteEndObject();
+    });
+
+    private static readonly JsonElement OneHourCacheControl = CreateElement(writer =>
+    {
+        writer.WriteStartObject();
+        writer.WriteString("type", "ephemeral");
+        writer.WriteString("ttl", "1h");
         writer.WriteEndObject();
     });
 
@@ -337,6 +355,14 @@ public sealed class AnthropicChatClient : IChatClient
             request.Headers.TryAddWithoutValidation("anthropic-beta", _options.Beta);
         }
 
+        // 长保留（ttl: 1h）需要对应的 beta 标头；调用方没写时补上，避免请求被拒。
+        if (_options.PromptCaching is { UseLongRetention: true } &&
+            (_options.Beta == null ||
+             _options.Beta.IndexOf("extended-cache-ttl", StringComparison.OrdinalIgnoreCase) < 0))
+        {
+            request.Headers.TryAddWithoutValidation("anthropic-beta", ExtendedCacheTtlBeta);
+        }
+
         if (_options.DefaultHeaders != null)
         {
             foreach (var header in _options.DefaultHeaders)
@@ -363,10 +389,35 @@ public sealed class AnthropicChatClient : IChatClient
         return new Uri(text + "/messages", UriKind.Absolute);
     }
 
-    private static string BuildRequestBody(ChatRequest request, bool stream)
+    private string BuildRequestBody(ChatRequest request, bool stream)
     {
+        var caching = _options.PromptCaching;
         var system = BuildSystemPrompt(request);
         var messages = BuildMessages(request.Messages);
+
+        // Anthropic 的缓存是前缀缓存：cache_control 之前的内容才被缓存。
+        // 因此标记从后往前放，保证任何一个标记都覆盖它之前的全部内容。
+        var cacheMarker = caching == null
+            ? default
+            : caching.UseLongRetention ? OneHourCacheControl : EphemeralCacheControl;
+
+        // 1) 消息末尾的滚动缓存点：让对话历史在后续轮次命中。
+        if (caching is { CacheMessages: true } && messages.Count > 0)
+        {
+            var target = messages.Count - 1 - Math.Max(0, caching.MessageCacheOffset);
+            if (target < 0)
+            {
+                target = messages.Count - 1;
+            }
+
+            // BuildMessages 已丢弃没有内容块的轮次，这里再防一次，避免越界。
+            var group = messages[target];
+            if (group.Blocks.Count > 0)
+            {
+                group.Blocks[group.Blocks.Count - 1] =
+                    AddCacheControl(group.Blocks[group.Blocks.Count - 1], cacheMarker);
+            }
+        }
 
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
@@ -379,7 +430,23 @@ public sealed class AnthropicChatClient : IChatClient
 
             if (!string.IsNullOrEmpty(system))
             {
-                writer.WriteString("system", system);
+                // 2) 系统提示：块数组形式才能携带 cache_control。
+                if (cacheMarker.ValueKind == JsonValueKind.Object && caching!.CacheSystem)
+                {
+                    writer.WritePropertyName("system");
+                    writer.WriteStartArray();
+                    writer.WriteStartObject();
+                    writer.WriteString("type", "text");
+                    writer.WriteString("text", system);
+                    writer.WritePropertyName("cache_control");
+                    cacheMarker.WriteTo(writer);
+                    writer.WriteEndObject();
+                    writer.WriteEndArray();
+                }
+                else
+                {
+                    writer.WriteString("system", system);
+                }
             }
 
             writer.WritePropertyName("messages");
@@ -403,7 +470,8 @@ public sealed class AnthropicChatClient : IChatClient
 
             if (request.Tools.Count > 0)
             {
-                WriteTools(writer, request.Tools);
+                // 3) 工具定义：放在最前，命中率最高。
+                WriteTools(writer, request.Tools, caching is { CacheTools: true } ? cacheMarker : default);
                 if (request.ToolChoice != null)
                 {
                     WriteToolChoice(writer, request.ToolChoice);
@@ -763,12 +831,16 @@ public sealed class AnthropicChatClient : IChatClient
         return EmptyObjectSchema;
     }
 
-    private static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<ToolDefinition> tools)
+    private static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<ToolDefinition> tools, JsonElement cacheControl)
     {
         writer.WritePropertyName("tools");
         writer.WriteStartArray();
-        foreach (var tool in tools)
+
+        // cache_control 只能放在工具数组的最后一个元素上：它缓存的是"此标记之前的全部前缀"。
+        var cacheIndex = cacheControl.ValueKind == JsonValueKind.Object ? tools.Count - 1 : -1;
+        for (var index = 0; index < tools.Count; index++)
         {
+            var tool = tools[index];
             writer.WriteStartObject();
             writer.WriteString("name", tool.Name);
             if (!string.IsNullOrEmpty(tool.Description))
@@ -786,10 +858,44 @@ public sealed class AnthropicChatClient : IChatClient
                 EmptyObjectSchema.WriteTo(writer);
             }
 
+            if (index == cacheIndex)
+            {
+                writer.WritePropertyName("cache_control");
+                cacheControl.WriteTo(writer);
+            }
+
             writer.WriteEndObject();
         }
 
         writer.WriteEndArray();
+    }
+
+    /// <summary>在内容块的顶层插入 <c>cache_control</c>。</summary>
+    private static JsonElement AddCacheControl(JsonElement block, JsonElement cacheControl)
+    {
+        if (block.ValueKind != JsonValueKind.Object || cacheControl.ValueKind != JsonValueKind.Object)
+        {
+            return block;
+        }
+
+        return CreateElement(writer =>
+        {
+            writer.WriteStartObject();
+            foreach (var property in block.EnumerateObject())
+            {
+                // 已带标记的块不重复添加。
+                if (string.Equals(property.Name, "cache_control", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                property.WriteTo(writer);
+            }
+
+            writer.WritePropertyName("cache_control");
+            cacheControl.WriteTo(writer);
+            writer.WriteEndObject();
+        });
     }
 
     private static void WriteToolChoice(Utf8JsonWriter writer, ToolChoice choice)

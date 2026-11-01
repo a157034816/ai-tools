@@ -100,13 +100,16 @@ public sealed class TerminalProviderRouter
 
         return observer == null
             ? _inner.CreateChatClient(provider)
-            : BuiltInProviderFactoryWithObserver.Create(provider, observer);
+            : BuiltInProviderFactoryWithObserver.Create(provider, observer, _inner.PromptCache);
     }
 
     /// <summary>可注入 HTTP 观察器的客户端构造器。</summary>
     internal static class BuiltInProviderFactoryWithObserver
     {
         public static IChatClient Create(ProviderConfig provider, IAiHttpObserver observer)
+            => Create(provider, observer, new PromptCacheOptions());
+
+        public static IChatClient Create(ProviderConfig provider, IAiHttpObserver observer, PromptCacheOptions promptCache)
         {
             if (provider == null)
             {
@@ -126,7 +129,10 @@ public sealed class TerminalProviderRouter
                     {
                         ApiKey = provider.ApiKey,
                         BaseAddress = baseAddress,
-                        Observer = observer
+                        Observer = observer,
+                        PromptCaching = promptCache.Enabled
+                            ? BuiltInProviderFactory.ToAnthropicCaching(promptCache)
+                            : null
                     });
 
                 case ProviderProtocols.Gemini:

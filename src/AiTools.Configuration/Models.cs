@@ -131,6 +131,9 @@ public sealed class AppSettings
     /// <summary>新会话使用的 system prompt。为空时回退到全局默认值。</summary>
     public string? SystemPrompt { get; set; }
 
+    /// <summary>提示缓存策略（三协议共用）。默认启用缓存与轮内预热。</summary>
+    public PromptCacheOptions PromptCache { get; set; } = new();
+
     /// <summary>按标识符查找服务商。</summary>
     public ProviderConfig? FindProvider(string? providerId)
         => providerId == null ? null : Providers.FirstOrDefault(p => string.Equals(p.Id, providerId, StringComparison.OrdinalIgnoreCase));
@@ -142,6 +145,7 @@ public sealed class AppSettings
         Providers = Providers.Select(p => p.Clone()).ToList(),
         SelectedProviderId = SelectedProviderId,
         SelectedModelId = SelectedModelId,
-        SystemPrompt = SystemPrompt
+        SystemPrompt = SystemPrompt,
+        PromptCache = PromptCache.Clone()
     };
 }

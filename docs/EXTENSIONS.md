@@ -240,6 +240,8 @@ var diagnostics = await pipeline.ReloadAsync();
 | `TurnEnd` | 一轮结束 | `TurnEndEvent`：`Continue` + `ContinuationPrompt` 请求追加一轮；`TurnIndex` |
 | `AgentEnd` | agent 循环正常结束 | `AgentLifecycleEvent`（只通知） |
 | `AgentFailed` | agent 循环被取消或异常结束 | `AgentFailedEvent`：`Error`、`Cancelled`、`PartialText`、`ToolCallCount`（只通知） |
+| `PreCompact` / `PostCompact` / `CompactFailed` | 上下文压缩的三个时机 | `PreCompactEvent` 可取消或直接提供摘要；后两者只通知。详见 [`COMPACTION.md`](COMPACTION.md) |
+| `CacheWarmingDecision` | 提示缓存即将刷新 | `CacheWarmingDecisionEvent`：`Phase`、`WarmCost`/`MissCost`/`ExpectedSavings`；改写 `Action`（`warm`/`stop`）。详见 [`PROMPT_CACHING.md`](PROMPT_CACHING.md) |
 
 组合语义（与 Pi 一致）：
 
@@ -640,7 +642,7 @@ var trust = ProjectTrust.Evaluate(cwd, trustedRoots, requireTrust);
 | `session_before_switch` / `session_before_fork` | 已实现（`SessionBeforeSwitch`，`Reason` 区分 `new`/`resume`/`fork`/`clear`，可取消） |
 | `session_compact` / `session_before_compact` / `session_compact_failed` | **未实现**：本项目没有上下文压缩，加空钩子只是死代码 |
 | `session_before_tree` / `session_tree` | 未实现（无会话树导航，分支靠 `/fork`） |
-| `cache_warming_decision` | 未实现（无 prompt 缓存预热机制） |
+| `cache_warming_decision` | `CacheWarmingDecision`：预热器每次刷新前分发，可改写 `Action` 为 `warm`/`stop` |
 | `ui_prompt_start` / `ui_prompt_end` | 未实现（扩展 UI 调用是同步接缝，宿主自行渲染） |
 | `model_select` / `thinking_level_select` | 未实现（宿主切换模型不发事件；可在 `BeforeAgentStart` 读 `Model`） |
 | `user_bash` | 未实现（本项目没有 `!` 前缀的直接 shell 通道） |

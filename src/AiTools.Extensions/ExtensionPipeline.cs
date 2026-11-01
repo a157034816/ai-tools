@@ -798,6 +798,27 @@ public sealed class ExtensionPipeline : IAsyncDisposable
         => Runtime.PublishAsync(ExtensionEvent.CompactFailed, failedEvent, context, cancellationToken);
 
     /// <summary>
+    /// 分发 <c>cache_warming_decision</c>：提示缓存即将刷新。返回处理后的结论（最后一个处理器生效）。
+    /// </summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="decisionEvent">决策事件（就地改写）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public async Task<CacheWarmingDecisionEvent> PublishCacheWarmingDecisionAsync(
+        CommandContext context,
+        CacheWarmingDecisionEvent decisionEvent,
+        CancellationToken cancellationToken = default)
+    {
+        var dispatched = await Runtime.DispatchAsync(
+            ExtensionEvent.CacheWarmingDecision,
+            decisionEvent,
+            context,
+            failClosed: decisionEvent,
+            cancellationToken).ConfigureAwait(false);
+
+        return dispatched as CacheWarmingDecisionEvent ?? decisionEvent;
+    }
+
+    /// <summary>
     /// 构建暴露给模型的工具：扩展工具（按装载结果声明、曝光级别与准备器改写）。
     /// </summary>
     public IReadOnlyList<ToolRegistration> BuildToolRegistrations()

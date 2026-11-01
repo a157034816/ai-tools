@@ -112,7 +112,14 @@ public enum ExtensionEvent
     PostCompact,
 
     /// <summary>上下文压缩失败后。可观察失败原因，不影响对话继续。</summary>
-    CompactFailed
+    CompactFailed,
+
+    /// <summary>
+    /// 提示缓存即将刷新前（对应 Pi 的 <c>cache_warming_decision</c>）。
+    /// 处理器可把 <see cref="CacheWarmingDecisionEvent.Action"/> 改写为 <c>warm</c> 或 <c>stop</c>，
+    /// 最后一个处理器给出的结论生效。
+    /// </summary>
+    CacheWarmingDecision
 }
 
 /// <summary>用户输入事件。返回非 null 表示已消费，宿主不再继续处理。</summary>
@@ -331,6 +338,54 @@ public sealed class CompactFailedEvent
 
     /// <summary>获取错误描述。</summary>
     public string Error { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// 提示缓存刷新的决策事件，对应 Pi 的 <c>cache_warming_decision</c>。
+/// </summary>
+/// <remarks>
+/// 预热器会在每次刷新前分发该事件，载荷里带上它自己的结论与经济性估算；
+/// 扩展可以基于会话状态、成本偏好或外部信号改写结论。
+/// 只有最后一个处理器返回的结论生效；处理器抛异常时回退到内置结论。
+/// </remarks>
+public sealed class CacheWarmingDecisionEvent
+{
+    /// <summary>获取阶段：<c>streaming</c>（轮内）或 <c>idle</c>（轮间）。</summary>
+    public string Phase { get; init; } = "streaming";
+
+    /// <summary>获取模型名。</summary>
+    public string Model { get; init; } = string.Empty;
+
+    /// <summary>获取最近一次真实请求的提示 token 数。</summary>
+    public int PromptTokens { get; init; }
+
+    /// <summary>获取本次刷新的价格估算（美元）。</summary>
+    public double WarmCost { get; init; }
+
+    /// <summary>获取缓存丢失时下一次真实请求多付的价格（美元）。</summary>
+    public double MissCost { get; init; }
+
+    /// <summary>获取"下一次真实请求会在过期前到来"的概率估计。</summary>
+    public double ContinuationProbability { get; init; }
+
+    /// <summary>获取预期节省（美元）。</summary>
+    public double ExpectedSavings { get; init; }
+
+    /// <summary>获取经济性是否可估算（提示规模与单价都已知时为 true）。</summary>
+    public bool EconomicsAvailable { get; init; }
+
+    /// <summary>获取或设置结论：<c>warm</c> 发送刷新，<c>stop</c> 停止预热直到下一次真实请求。</summary>
+    public string Action { get; set; } = "warm";
+
+    /// <summary>结果是否为 <c>warm</c>。</summary>
+    public bool IsWarm =>
+        string.Equals(Action, "warm", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>把结论设为 <c>warm</c>。</summary>
+    public void Warm() => Action = "warm";
+
+    /// <summary>把结论设为 <c>stop</c>。</summary>
+    public void Stop() => Action = "stop";
 }
 
 /// <summary>工具调用事件。设置 <see cref="BlockReason"/> 即阻止执行。</summary>

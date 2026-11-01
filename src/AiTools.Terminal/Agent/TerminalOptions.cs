@@ -107,6 +107,19 @@ public sealed class TerminalOptions
     /// <summary>可选的自定义摘要器；null 时复用当前会话模型生成摘要。</summary>
     public AiTools.Core.Chat.IContextSummarizer? ContextSummarizer { get; set; }
 
+    /// <summary>
+    /// 提示缓存策略。默认启用缓存写入与轮内预热。
+    /// Anthropic 会写入 <c>cache_control</c>，OpenAI 与 Gemini 依靠各自的前缀缓存，
+    /// 预热器在轮内按缓存寿命刷新，避免长时间工具循环后缓存过期。
+    /// </summary>
+    public PromptCacheOptions PromptCache { get; set; } = new();
+
+    /// <summary>
+    /// 预热器配置。仅当 <see cref="PromptCacheOptions.WarmingEnabled"/> 为 true 时生效。
+    /// 默认与 Pi 一致：只在轮内预热、预期节省低于 $0.05 不刷新。
+    /// </summary>
+    public AiTools.Core.Chat.PromptCacheWarmingOptions PromptCacheWarming { get; set; } = new();
+
     /// <summary>宿主注册的工具 provider。</summary>
     public IReadOnlyList<IChatToolProvider> ToolProviders { get; set; } = Array.Empty<IChatToolProvider>();
 
@@ -136,9 +149,11 @@ public sealed class TerminalOptions
     {
         SecretProtector ??= new DpapiSecretProtector();
         SettingsStore ??= new JsonFileSettingsStore(SecretProtector);
-        ProviderFactory ??= new BuiltInProviderFactory();
+        ProviderFactory ??= new BuiltInProviderFactory(PromptCache);
         Providers ??= ProviderDescriptor.BuiltIns;
         ConversationStore ??= new AiTools.Core.Sessions.JsonConversationStore(AiTools.Core.AiToolsPaths.GetConversationsRoot());
+        PromptCache ??= new PromptCacheOptions();
+        PromptCacheWarming ??= new AiTools.Core.Chat.PromptCacheWarmingOptions();
         MaxToolRounds = Math.Max(0, MaxToolRounds);
         return this;
     }

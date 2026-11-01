@@ -35,6 +35,7 @@ public sealed class AgentSession : IAsyncDisposable
     private readonly List<IChatToolProvider> _registeredProviders = new();
     private readonly object _toolProviderGate = new();
     private readonly ContextCompactionService _compactionService;
+    private readonly PromptCacheWarmer? _cacheWarmer;
     private AppSettings? _settings;
     private PluginHost? _pluginHost;
     private ExtensionWorkspace? _workspace;
@@ -55,8 +56,22 @@ public sealed class AgentSession : IAsyncDisposable
     {
         _options = (options ?? throw new ArgumentNullException(nameof(options))).Normalize();
         _compactionService = new ContextCompactionService(_options.ContextSummarizer);
+        _cacheWarmer = _options.PromptCache.WarmingEnabled
+            ? new PromptCacheWarmer(_options.PromptCacheWarming, DecideCacheWarmingAsync)
+            : null;
+        if (_cacheWarmer != null)
+        {
+            _cacheWarmer.Warmed += OnCacheWarmed;
+        }
+
         WorkingDirectory = Path.GetFullPath(_options.WorkingDirectory ?? Environment.CurrentDirectory);
     }
+
+    /// <summary>获取提示缓存预热器；未启用时为 null。</summary>
+    public PromptCacheWarmer? CacheWarmer => _cacheWarmer;
+
+    /// <summary>获取预热器的当前状态（用于状态栏展示）；未启用时为 null。</summary>
+    public CacheWarmingStatus? CacheWarmingStatus => _cacheWarmer?.Status;
 
     /// <summary>会话更新事件。可能在后台线程触发，界面需自行封送。</summary>
     public event Action<AgentUpdate>? Updates;
@@ -345,6 +360,7 @@ public sealed class AgentSession : IAsyncDisposable
         _conversation = null;
         _compaction = null;
         _turnIndex = 0;
+        _cacheWarmer?.Cancel();
         _pipeline?.Runtime.State.ClearAll();
         _pipeline?.Session.UpdateSessionId(null);
         await PublishSwitchedAsync("new", previousId).ConfigureAwait(false);
@@ -385,6 +401,7 @@ public sealed class AgentSession : IAsyncDisposable
         var previousId = _conversation?.Id;
         ApplyConversation(record);
         _turnIndex = 0;
+        _cacheWarmer?.Cancel();
         await PublishSwitchedAsync("resume", previousId).ConfigureAwait(false);
         SetStatus($"已恢复「{record.Title}」（{record.Messages.Count} 条消息）");
         RaiseStateChanged();
@@ -420,6 +437,7 @@ public sealed class AgentSession : IAsyncDisposable
         var previousId = _conversation?.Id;
         ApplyConversation(fork);
         _turnIndex = 0;
+        _cacheWarmer?.Cancel();
         await PublishSwitchedAsync("fork", previousId).ConfigureAwait(false);
         SetStatus($"已分叉为「{fork.Title}」");
         RaiseStateChanged();
@@ -453,6 +471,8 @@ public sealed class AgentSession : IAsyncDisposable
 
         CurrentProvider = provider;
         CurrentModel = model;
+        // 缓存键包含模型：切换模型后旧的缓存条目不再命中，停止预热。
+        _cacheWarmer?.Cancel();
         if (_settings != null)
         {
             _settings.SelectedProviderId = provider.Id;
@@ -530,6 +550,7 @@ public sealed class AgentSession : IAsyncDisposable
 
         _disposed = true;
         CancelTurn();
+        _cacheWarmer?.Dispose();
         await PersistAsync().ConfigureAwait(false);
 
         if (_pipeline != null)
@@ -875,6 +896,8 @@ public sealed class AgentSession : IAsyncDisposable
                 await _pipeline.PublishTurnStartAsync(CreateExtensionContext(), turnIndex, token).ConfigureAwait(false);
             }
 
+            _cacheWarmer?.OnRunStarted();
+
             var tools = BuildToolRegistrations();
             var systemPrompt = BuildSystemPrompt(model);
 
@@ -971,6 +994,10 @@ public sealed class AgentSession : IAsyncDisposable
                 Tools = toolArray,
                 ToolChoice = toolArray.Length > 0 ? ToolChoice.Auto : null
             };
+
+            // 预热要在请求期间就开始跑（长工具循环正是缓存会过期的时段），
+            // 此时还没有真实用量，先用估算值安排刷新；响应回来后再用实际值刷新一次。
+            TrackPromptCacheBeforeRequest(client, provider, request, systemPrompt, toolArray);
 
             async Task<string> InvokeToolAsync(ToolCall call, CancellationToken toolToken)
             {
@@ -1185,6 +1212,8 @@ public sealed class AgentSession : IAsyncDisposable
                 text = response.GetText();
             }
 
+            TrackPromptCache(client, provider, request, response.Usage);
+
             if (_pipeline != null && !string.IsNullOrWhiteSpace(text))
             {
                 text = await _pipeline.PublishMessageEndAsync(CreateExtensionContext(), ChatRole.Assistant, text, token).ConfigureAwait(false);
@@ -1237,8 +1266,9 @@ public sealed class AgentSession : IAsyncDisposable
 
             SetStatus(response.Usage == null
                 ? "完成"
-                : $"完成 · {FormatUsage(response.Usage)} · {stopwatch.Elapsed.TotalSeconds:0.0}s");
+                : $"完成 · {FormatUsage(response.Usage)}{FormatCacheHit(response.Usage)} · {stopwatch.Elapsed.TotalSeconds:0.0}s");
             _ = started;
+            _cacheWarmer?.OnRunSettled();
             if (_pipeline != null)
             {
                 await _pipeline.PublishAgentEndAsync(CreateExtensionContext(), CancellationToken.None).ConfigureAwait(false);
@@ -1370,11 +1400,109 @@ public sealed class AgentSession : IAsyncDisposable
         }
         finally
         {
+            // 无论成功、取消还是失败，本轮都已结束：Streaming 模式据此停止预热。
+            _cacheWarmer?.OnRunSettled();
             IsBusy = false;
             _turnCancellation?.Dispose();
             _turnCancellation = null;
             RaiseStateChanged();
         }
+    }
+
+    /// <summary>
+    /// 请求发出前先用估算的提示规模安排预热。真实用量只有响应回来才知道，
+    /// 但轮内预热恰恰要在"等响应与跑工具"这段时间生效，所以先跑起来。
+    /// </summary>
+    private void TrackPromptCacheBeforeRequest(
+        IChatClient client,
+        ProviderConfig provider,
+        ChatRequest request,
+        string? systemPrompt,
+        IReadOnlyList<ToolDefinition> tools)
+    {
+        if (_cacheWarmer == null || !_options.PromptCache.Enabled)
+        {
+            return;
+        }
+
+        var promptTokens = TokenEstimator.EstimateText(systemPrompt)
+                           + TokenEstimator.EstimateTools(tools)
+                           + TokenEstimator.EstimateMessages(request.Messages);
+
+        TrackPromptCache(client, provider, request, promptTokens);
+    }
+
+    /// <summary>
+    /// 记录最近一次真实请求，交给预热器按缓存寿命刷新。
+    /// 只有可缓存的模型才跟踪；其它请求会停止已有预热（前缀已改变）。
+    /// </summary>
+    private void TrackPromptCache(IChatClient client, ProviderConfig provider, ChatRequest request, Usage? usage)
+        => TrackPromptCache(
+            client,
+            provider,
+            request,
+            PromptCacheAccounting.GetPromptTokens(client.ProviderName, usage));
+
+    /// <summary>记录最近一次真实请求（已知提示规模）。</summary>
+    private void TrackPromptCache(IChatClient client, ProviderConfig provider, ChatRequest request, int promptTokens)
+    {
+        if (_cacheWarmer == null)
+        {
+            return;
+        }
+
+        var policy = _options.PromptCache.Enabled
+            ? PromptCachePolicyCatalog.Resolve(provider.Protocol, request.Model)
+            : PromptCachePolicy.None;
+
+        _cacheWarmer.Track(
+            new PromptCacheWarmRequest
+            {
+                Client = client,
+                Request = request,
+                Policy = policy,
+                PromptTokens = promptTokens
+            },
+            () => CurrentProvider?.Id == provider.Id && CurrentModel?.Id == request.Model);
+    }
+
+    /// <summary>预热结论交给扩展改写；无扩展管道时使用内置结论。</summary>
+    private async Task<CacheWarmingAction> DecideCacheWarmingAsync(CacheWarmingDecision decision)
+    {
+        if (_pipeline == null)
+        {
+            return decision.Action;
+        }
+
+        var dispatched = await _pipeline.PublishCacheWarmingDecisionAsync(
+            CreateExtensionContext(),
+            new CacheWarmingDecisionEvent
+            {
+                Phase = decision.Phase,
+                Model = decision.Model,
+                PromptTokens = decision.PromptTokens,
+                WarmCost = decision.WarmCost,
+                MissCost = decision.MissCost,
+                ContinuationProbability = decision.ContinuationProbability,
+                ExpectedSavings = decision.ExpectedSavings,
+                EconomicsAvailable = decision.EconomicsAvailable,
+                Action = decision.Action == CacheWarmingAction.Warm ? "warm" : "stop"
+            },
+            CancellationToken.None).ConfigureAwait(false);
+
+        return dispatched.IsWarm ? CacheWarmingAction.Warm : CacheWarmingAction.Stop;
+    }
+
+    /// <summary>刷新成功：用量计入会话总量但不进入上下文，界面只显示一条通知。</summary>
+    private void OnCacheWarmed(CacheWarmingResult result)
+    {
+        Raise(new AgentUpdate
+        {
+            Kind = AgentUpdateKind.Notice,
+            Text = $"缓存已刷新 · {result.PromptTokens:N0} tokens · {result.Duration.TotalSeconds:0.0}s",
+            NoticeKind = NoticeKind.Info,
+            Usage = result.Usage
+        });
     }
 
     private void RaiseToolFinished(ToolCall call, string result, TimeSpan duration, bool isError)
@@ -1962,6 +2090,14 @@ public sealed class AgentSession : IAsyncDisposable
         }
 
         return usage.TotalTokens.HasValue ? $"共 {usage.TotalTokens.Value} tokens" : null;
+    }
+
+    /// <summary>命中提示缓存时在状态行追加命中率；服务商未报告缓存字段时返回空串。</summary>
+    private string FormatCacheHit(Usage usage)
+    {
+        var providerName = CurrentProvider?.Protocol;
+        var rate = PromptCacheAccounting.GetCacheHitRate(providerName, usage);
+        return rate == null ? string.Empty : $" · 缓存 {rate.Value:P0}";
     }
 
     // ------------------------------------------------------------------

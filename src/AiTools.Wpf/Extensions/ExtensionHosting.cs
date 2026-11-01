@@ -478,14 +478,20 @@ public sealed class ExtensionProviderRouter
     private readonly BuiltInProviderFactory _inner = new();
     private readonly ExtensionRuntime _runtime;
     private readonly IProviderFactory? _fallback;
+    private readonly PromptCacheOptions _promptCache;
 
     /// <summary>创建路由。</summary>
     /// <param name="runtime">扩展运行时。</param>
     /// <param name="fallback">扩展未处理时使用的工厂；默认为内置工厂。</param>
-    public ExtensionProviderRouter(ExtensionRuntime runtime, IProviderFactory? fallback = null)
+    /// <param name="promptCache">提示缓存策略；null 时使用默认值（启用缓存）。</param>
+    public ExtensionProviderRouter(
+        ExtensionRuntime runtime,
+        IProviderFactory? fallback = null,
+        PromptCacheOptions? promptCache = null)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _fallback = fallback;
+        _promptCache = promptCache ?? new PromptCacheOptions();
     }
 
     /// <summary>获取扩展注册的 provider 名称。</summary>
@@ -566,7 +572,7 @@ public sealed class ExtensionProviderRouter
 
         return observer == null
             ? _inner.CreateChatClient(provider)
-            : BuiltInProviderFactoryWithObserver.Create(provider, observer);
+            : BuiltInProviderFactoryWithObserver.Create(provider, observer, _promptCache);
     }
 }
 
@@ -574,6 +580,9 @@ public sealed class ExtensionProviderRouter
 internal static class BuiltInProviderFactoryWithObserver
 {
     public static IChatClient Create(ProviderConfig provider, IAiHttpObserver observer)
+        => Create(provider, observer, new PromptCacheOptions());
+
+    public static IChatClient Create(ProviderConfig provider, IAiHttpObserver observer, PromptCacheOptions promptCache)
     {
         if (provider == null)
         {
@@ -593,7 +602,8 @@ internal static class BuiltInProviderFactoryWithObserver
                 {
                     ApiKey = provider.ApiKey,
                     BaseAddress = baseAddress,
-                    Observer = observer
+                    Observer = observer,
+                    PromptCaching = promptCache.Enabled ? BuiltInProviderFactory.ToAnthropicCaching(promptCache) : null
                 });
 
             case ProviderProtocols.Gemini:

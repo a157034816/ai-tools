@@ -35,4 +35,14 @@ public class AnthropicOptions : AiHttpOptions
     /// <c>interleaved-thinking-2025-05-14</c> 或 <c>prompt-caching-2024-07-31</c>。
     /// </summary>
     public string? Beta { get; init; }
+
+    /// <summary>
+    /// 提示缓存写入策略。为 null 时不发送任何 <c>cache_control</c> 标记，完全由调用方
+    /// 通过 <see cref="AiHttpOptions.DefaultHeaders"/> / <see cref="Abstractions.ChatRequest.AdditionalParameters"/> 自行控制。
+    /// </summary>
+    /// <remarks>
+    /// 设置后用 <see cref="AnthropicPromptCachingOptions.Automatic"/> 即可获得
+    /// "工具 → 系统提示 → 末条消息"的推荐放置顺序。
+    /// </remarks>
+    public AnthropicPromptCachingOptions? PromptCaching { get; init; }
 }

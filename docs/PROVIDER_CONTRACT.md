@@ -160,6 +160,23 @@ interface IAudioClient
     Task<TranscriptionResponse> TranscribeAsync(TranscriptionRequest request, CancellationToken ct = default);
 }
 
+// 提示缓存（AiTools.Core.Chat）
+enum PromptCacheKind { None, Explicit, Implicit }
+sealed class PromptCachePolicy
+{
+    PromptCacheKind Kind; TimeSpan? Lifetime; PromptCachePricing? Pricing;
+    bool IsWarmable; static PromptCachePolicy None;
+}
+static class PromptCachePolicyCatalog
+{
+    static PromptCachePolicy Resolve(string? protocol, string? modelId);
+}
+static class PromptCacheAccounting
+{
+    static int GetPromptTokens(string? providerName, Usage? usage);
+    static double? GetCacheHitRate(string? providerName, Usage? usage);
+}
+
 // 异常
 AiToolsException : Exception
 AiServiceException : AiToolsException { string ProviderName; int? StatusCode; string? ErrorCode; string? ResponseBody; bool IsTransient; }
@@ -249,3 +266,6 @@ sealed class ChatStreamAccumulator
 5. 每个 Provider 至少暴露一个构造函数接受其 Options 与可选的 `HttpClient`；Options 继承 `AiHttpOptions`。
 6. 请求/响应映射中，未提供的可选字段不要写进 JSON（用 `DefaultIgnoreCondition.WhenWritingNull` 或条件添加）。
 7. 完成前运行 `dotnet build <你的项目.csproj>`，确保 0 error（尽量 0 warning）。
+8. **提示缓存**：能用缓存时把缓存读写口径填进 `Usage.CacheReadInputTokens` / `CacheCreationInputTokens`；
+   请求侧的缓存标记由 Provider 自己负责（Anthropic 走 `cache_control`，OpenAI 与 Gemini 无需标记），
+   预热统一由 `AiTools.Core.Chat.PromptCacheWarmer` 在宿主侧完成，Provider 不要自己起定时器。

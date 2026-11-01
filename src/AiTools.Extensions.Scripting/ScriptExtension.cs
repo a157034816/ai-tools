@@ -536,6 +536,18 @@ public sealed class ScriptExtension : IExtension, IDisposable
                 model = e.Model,
                 error = e.Error
             }),
+            CacheWarmingDecisionEvent e => JsonSerializer.Serialize(new
+            {
+                phase = e.Phase,
+                model = e.Model,
+                promptTokens = e.PromptTokens,
+                warmCost = e.WarmCost,
+                missCost = e.MissCost,
+                continuationProbability = e.ContinuationProbability,
+                expectedSavings = e.ExpectedSavings,
+                economicsAvailable = e.EconomicsAvailable,
+                action = e.Action
+            }),
             _ => "{}"
         };
         var eventObject = new JsJsonParser(engine).Parse(json).AsObject();
@@ -651,6 +663,14 @@ public sealed class ScriptExtension : IExtension, IDisposable
             case PreCompactEvent compact:
                 compact.CancelReason = JsStringOrNull(value.Get("cancelReason"));
                 compact.Summary = JsStringOrNull(value.Get("summary"));
+                break;
+            case CacheWarmingDecisionEvent warming:
+                var warmingAction = JsStringOrNull(value.Get("action"));
+                if (!string.IsNullOrEmpty(warmingAction))
+                {
+                    warming.Action = warmingAction!;
+                }
+
                 break;
             case InstructionsEvent instructions:
                 instructions.OverridePrompt = JsStringOrNull(value.Get("overridePrompt"));

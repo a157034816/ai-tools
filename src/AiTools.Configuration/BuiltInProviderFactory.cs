@@ -17,6 +17,14 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
     private readonly Dictionary<string, IChatClient> _cache = new(StringComparer.Ordinal);
     private readonly object _gate = new();
 
+    /// <summary>创建工厂。</summary>
+    /// <param name="promptCache">提示缓存策略；null 时使用默认值（启用缓存与预热）。</param>
+    public BuiltInProviderFactory(PromptCacheOptions? promptCache = null)
+        => PromptCache = promptCache ?? new PromptCacheOptions();
+
+    /// <summary>获取提示缓存策略。修改后需要清空会话/重载设置才对新建的客户端生效。</summary>
+    public PromptCacheOptions PromptCache { get; }
+
     /// <inheritdoc />
     public IChatClient CreateChatClient(ProviderConfig provider)
     {
@@ -54,7 +62,7 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
         return client;
     }
 
-    private static IChatClient Create(ProviderConfig provider)
+    private IChatClient Create(ProviderConfig provider)
     {
         switch (provider.Protocol)
         {
@@ -70,7 +78,8 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
                 return new AnthropicChatClient(new AnthropicOptions
                 {
                     ApiKey = provider.ApiKey,
-                    BaseAddress = new Uri(provider.BaseUrl, UriKind.Absolute)
+                    BaseAddress = new Uri(provider.BaseUrl, UriKind.Absolute),
+                    PromptCaching = PromptCache.Enabled ? ToAnthropicCaching(PromptCache) : null
                 });
 
             case ProviderProtocols.Gemini:
@@ -84,6 +93,16 @@ public sealed class BuiltInProviderFactory : IProviderFactory, IProviderModelCat
                 throw new AiToolsConfigurationException($"不支持的服务商协议：{provider.Protocol}。可用协议：{string.Join(", ", ProviderProtocols.All)}。");
         }
     }
+
+    /// <summary>把共享策略映射成 Anthropic 专属的缓存写入配置。</summary>
+    public static AnthropicPromptCachingOptions ToAnthropicCaching(PromptCacheOptions options) => new()
+    {
+        UseLongRetention = options.LongRetention,
+        CacheTools = options.CacheTools,
+        CacheSystem = options.CacheSystem,
+        CacheMessages = options.CacheMessages,
+        MessageCacheOffset = options.MessageCacheOffset
+    };
 
     /// <inheritdoc />
     public IModelCatalog CreateModelCatalog(ProviderConfig provider)

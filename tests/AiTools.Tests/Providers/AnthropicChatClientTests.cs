@@ -266,6 +266,156 @@ public class AnthropicChatClientTests
             client.CompleteAsync(new ChatRequest { Model = "m", Messages = new[] { ChatMessage.User("hi") } }));
     }
 
+    // ------------------------------------------------------------------
+    // 提示缓存（cache_control）
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task CompleteAsync_WithoutPromptCaching_SendsNoCacheControl()
+    {
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleResponse));
+        var client = new AnthropicChatClient(Options(), handler.CreateClient());
+
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "claude-sonnet-4-5",
+            SystemPrompt = "sys",
+            Messages = new[] { ChatMessage.User("hi") }
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        Assert.DoesNotContain("cache_control", handler.LastRequestBody);
+        // 未启用时应保持纯字符串的 system 形式（旧行为不变）。
+        Assert.Equal(JsonValueKind.String, body.RootElement.GetProperty("system").ValueKind);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_AutomaticPromptCaching_MarksToolsSystemAndLastMessage()
+    {
+        var options = new AnthropicOptions
+        {
+            ApiKey = "test-key",
+            PromptCaching = AnthropicPromptCachingOptions.Automatic
+        };
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleResponse));
+        var client = new AnthropicChatClient(options, handler.CreateClient());
+
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "claude-sonnet-4-5",
+            SystemPrompt = "sys",
+            Messages = new[] { ChatMessage.User("hi") },
+            Tools = new[]
+            {
+                ToolDefinition.Create("lookup", "look things up"),
+                ToolDefinition.Create("search", "search things")
+            }
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        var root = body.RootElement;
+
+        // 系统提示改为块数组，块上带 cache_control。
+        var system = root.GetProperty("system");
+        Assert.Equal(JsonValueKind.Array, system.ValueKind);
+        Assert.Equal("ephemeral", system[0].GetProperty("cache_control").GetProperty("type").GetString());
+
+        // 工具标记只落在最后一个工具上（它缓存之前全部内容）。
+        var tools = root.GetProperty("tools");
+        Assert.False(tools[0].TryGetProperty("cache_control", out _));
+        Assert.Equal("ephemeral", tools[1].GetProperty("cache_control").GetProperty("type").GetString());
+
+        // 消息末尾的滚动缓存点。
+        var lastBlock = root.GetProperty("messages")[0].GetProperty("content")[0];
+        Assert.Equal("ephemeral", lastBlock.GetProperty("cache_control").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task CompleteAsync_LongRetention_SendsOneHourTtlAndBetaHeader()
+    {
+        var options = new AnthropicOptions
+        {
+            ApiKey = "test-key",
+            PromptCaching = new AnthropicPromptCachingOptions { UseLongRetention = true }
+        };
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleResponse));
+        var client = new AnthropicChatClient(options, handler.CreateClient());
+
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "claude-sonnet-4-5",
+            SystemPrompt = "sys",
+            Messages = new[] { ChatMessage.User("hi") }
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        var marker = body.RootElement.GetProperty("system")[0].GetProperty("cache_control");
+        Assert.Equal("1h", marker.GetProperty("ttl").GetString());
+
+        // ttl: 1h 必须伴随 extended-cache-ttl beta 标头，否则请求会被拒。
+        Assert.Contains(
+            handler.LastHeaders["anthropic-beta"],
+            value => value.Contains("extended-cache-ttl", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task CompleteAsync_CacheMessagesDisabled_OnlyMarksSystem()
+    {
+        var options = new AnthropicOptions
+        {
+            ApiKey = "test-key",
+            PromptCaching = new AnthropicPromptCachingOptions { CacheMessages = false, CacheTools = false }
+        };
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleResponse));
+        var client = new AnthropicChatClient(options, handler.CreateClient());
+
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "claude-sonnet-4-5",
+            SystemPrompt = "sys",
+            Messages = new[] { ChatMessage.User("hi") },
+            Tools = new[] { ToolDefinition.Create("lookup", "look") }
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        var root = body.RootElement;
+
+        Assert.True(root.GetProperty("system")[0].TryGetProperty("cache_control", out _));
+        Assert.False(root.GetProperty("tools")[0].TryGetProperty("cache_control", out _));
+        Assert.False(
+            root.GetProperty("messages")[0].GetProperty("content")[0].TryGetProperty("cache_control", out _));
+    }
+
+    [Fact]
+    public async Task CompleteAsync_MessageCacheOffset_PlacesMarkerOnEarlierMessage()
+    {
+        var options = new AnthropicOptions
+        {
+            ApiKey = "test-key",
+            PromptCaching = new AnthropicPromptCachingOptions { MessageCacheOffset = 1 }
+        };
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleResponse));
+        var client = new AnthropicChatClient(options, handler.CreateClient());
+
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "claude-sonnet-4-5",
+            Messages = new[]
+            {
+                ChatMessage.User("first"),
+                ChatMessage.Assistant("reply"),
+                ChatMessage.User("second")
+            }
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        var messages = body.RootElement.GetProperty("messages");
+
+        // 标记落在倒数第二条（assistant），最后一条不带。
+        Assert.True(messages[1].GetProperty("content")[0].TryGetProperty("cache_control", out _));
+        Assert.False(messages[2].GetProperty("content")[0].TryGetProperty("cache_control", out _));
+    }
+
     private const string SimpleResponse = """
     {"id":"m1","model":"claude","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}
     """;
