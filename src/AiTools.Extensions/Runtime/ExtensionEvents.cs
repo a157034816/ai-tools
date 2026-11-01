@@ -100,7 +100,19 @@ public enum ExtensionEvent
     AfterProviderResponse,
 
     /// <summary>provider 流中的每个事件（只通知，对应 Pi 的 <c>provider_stream_event</c>）。</summary>
-    ProviderStreamEvent
+    ProviderStreamEvent,
+
+    /// <summary>
+    /// 上下文即将被压缩（对应 Claude Code 的 <c>PreCompact</c>）。
+    /// 处理器可取消压缩，或直接提供摘要跳过模型调用。
+    /// </summary>
+    PreCompact,
+
+    /// <summary>上下文压缩完成后（对应 Claude Code 的 <c>PostCompact</c>）。只通知。</summary>
+    PostCompact,
+
+    /// <summary>上下文压缩失败后。可观察失败原因，不影响对话继续。</summary>
+    CompactFailed
 }
 
 /// <summary>用户输入事件。返回非 null 表示已消费，宿主不再继续处理。</summary>
@@ -241,6 +253,84 @@ public sealed class SessionSwitchedEvent
 
     /// <summary>获取新的会话 ID；<c>new</c> / <c>clear</c> 为 null。</summary>
     public string? SessionId { get; init; }
+}
+
+/// <summary>上下文压缩前的事件。设置 <see cref="CancelReason"/> 即取消；设置 <see cref="Summary"/> 即跳过模型调用。</summary>
+/// <remarks>
+/// 对应 Claude Code 的 <c>PreCompact</c>。手动压缩与阈值触发的自动压缩都会分发；
+/// 此前若已压缩过，<see cref="PreviousSummary"/> 与 <see cref="CoveredMessageCount"/> 描述现有状态。
+/// </remarks>
+public sealed class PreCompactEvent
+{
+    /// <summary>获取触发原因：<c>threshold</c>（达到窗口 90%）、<c>manual</c>（/compact）或 <c>overflow</c>。</summary>
+    public string Reason { get; init; } = "threshold";
+
+    /// <summary>获取模型名。</summary>
+    public string Model { get; init; } = string.Empty;
+
+    /// <summary>获取当前请求的估算 token 数。</summary>
+    public int TokenCount { get; init; }
+
+    /// <summary>获取模型上下文窗口。</summary>
+    public int ContextWindow { get; init; }
+
+    /// <summary>获取本次将折叠的消息数。</summary>
+    public int MessageCount { get; init; }
+
+    /// <summary>获取此前的摘要；尚未压缩过时为 null。</summary>
+    public string? PreviousSummary { get; init; }
+
+    /// <summary>获取此前摘要已覆盖的消息数。</summary>
+    public int CoveredMessageCount { get; init; }
+
+    /// <summary>获取或设置取消原因；非空即取消本次压缩。</summary>
+    public string? CancelReason { get; set; }
+
+    /// <summary>获取或设置由处理器提供的摘要；非空时跳过模型调用。</summary>
+    public string? Summary { get; set; }
+
+    /// <summary>获取是否已被取消。</summary>
+    public bool Cancelled => !string.IsNullOrEmpty(CancelReason);
+
+    /// <summary>取消本次压缩。</summary>
+    /// <param name="reason">展示给用户的原因。</param>
+    public void Cancel(string reason) => CancelReason = reason;
+}
+
+/// <summary>上下文压缩完成后的事件。只通知。</summary>
+/// <remarks>对应 Claude Code 的 <c>PostCompact</c>。摘要本身以用户消息形式进入上下文。</remarks>
+public sealed class PostCompactEvent
+{
+    /// <summary>获取触发原因。</summary>
+    public string Reason { get; init; } = "threshold";
+
+    /// <summary>获取模型名。</summary>
+    public string Model { get; init; } = string.Empty;
+
+    /// <summary>获取摘要正文。</summary>
+    public string Summary { get; init; } = string.Empty;
+
+    /// <summary>获取摘要覆盖的消息数（从对话开头计）。</summary>
+    public int CoveredMessageCount { get; init; }
+
+    /// <summary>获取压缩前的估算 token 数。</summary>
+    public int OriginalTokenCount { get; init; }
+
+    /// <summary>获取压缩后的估算 token 数。</summary>
+    public int CompactedTokenCount { get; init; }
+}
+
+/// <summary>上下文压缩失败的事件。可观察失败原因，不影响对话继续。</summary>
+public sealed class CompactFailedEvent
+{
+    /// <summary>获取触发原因。</summary>
+    public string Reason { get; init; } = "threshold";
+
+    /// <summary>获取模型名。</summary>
+    public string Model { get; init; } = string.Empty;
+
+    /// <summary>获取错误描述。</summary>
+    public string Error { get; init; } = string.Empty;
 }
 
 /// <summary>工具调用事件。设置 <see cref="BlockReason"/> 即阻止执行。</summary>

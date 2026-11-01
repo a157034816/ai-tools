@@ -757,6 +757,47 @@ public sealed class ExtensionPipeline : IAsyncDisposable
             cancellationToken);
 
     /// <summary>
+    /// 分发 <c>pre_compact</c>：上下文即将压缩。返回处理后的决策（可能被取消，或带上调用方提供的摘要）。
+    /// </summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="compactEvent">压缩前事件（就地改写）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public async Task<PreCompactEvent> PublishPreCompactAsync(
+        CommandContext context,
+        PreCompactEvent compactEvent,
+        CancellationToken cancellationToken = default)
+    {
+        var dispatched = await Runtime.DispatchAsync(
+            ExtensionEvent.PreCompact,
+            compactEvent,
+            context,
+            failClosed: compactEvent,
+            cancellationToken).ConfigureAwait(false);
+
+        return dispatched as PreCompactEvent ?? compactEvent;
+    }
+
+    /// <summary>分发 <c>post_compact</c>：上下文压缩完成。只通知。</summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="compactEvent">压缩结果事件。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishPostCompactAsync(
+        CommandContext context,
+        PostCompactEvent compactEvent,
+        CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(ExtensionEvent.PostCompact, compactEvent, context, cancellationToken);
+
+    /// <summary>分发 <c>compact_failed</c>：上下文压缩失败。只通知。</summary>
+    /// <param name="context">命令上下文。</param>
+    /// <param name="failedEvent">失败事件。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task PublishCompactFailedAsync(
+        CommandContext context,
+        CompactFailedEvent failedEvent,
+        CancellationToken cancellationToken = default)
+        => Runtime.PublishAsync(ExtensionEvent.CompactFailed, failedEvent, context, cancellationToken);
+
+    /// <summary>
     /// 构建暴露给模型的工具：扩展工具（按装载结果声明、曝光级别与准备器改写）。
     /// </summary>
     public IReadOnlyList<ToolRegistration> BuildToolRegistrations()

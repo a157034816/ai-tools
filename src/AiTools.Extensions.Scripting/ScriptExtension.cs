@@ -509,6 +509,33 @@ public sealed class ScriptExtension : IExtension, IDisposable
                 sections = e.Sections.Select(section => new { source = section.Source, text = section.Text, enabled = section.Enabled }).ToArray(),
                 overridePrompt = e.OverridePrompt
             }),
+            PreCompactEvent e => JsonSerializer.Serialize(new
+            {
+                reason = e.Reason,
+                model = e.Model,
+                tokenCount = e.TokenCount,
+                contextWindow = e.ContextWindow,
+                messageCount = e.MessageCount,
+                previousSummary = e.PreviousSummary,
+                coveredMessageCount = e.CoveredMessageCount,
+                cancelReason = e.CancelReason,
+                summary = e.Summary
+            }),
+            PostCompactEvent e => JsonSerializer.Serialize(new
+            {
+                reason = e.Reason,
+                model = e.Model,
+                summary = e.Summary,
+                coveredMessageCount = e.CoveredMessageCount,
+                originalTokenCount = e.OriginalTokenCount,
+                compactedTokenCount = e.CompactedTokenCount
+            }),
+            CompactFailedEvent e => JsonSerializer.Serialize(new
+            {
+                reason = e.Reason,
+                model = e.Model,
+                error = e.Error
+            }),
             _ => "{}"
         };
         var eventObject = new JsJsonParser(engine).Parse(json).AsObject();
@@ -620,6 +647,10 @@ public sealed class ScriptExtension : IExtension, IDisposable
                 break;
             case SessionBeforeSwitchEvent sessionSwitch:
                 sessionSwitch.CancelReason = JsStringOrNull(value.Get("cancelReason"));
+                break;
+            case PreCompactEvent compact:
+                compact.CancelReason = JsStringOrNull(value.Get("cancelReason"));
+                compact.Summary = JsStringOrNull(value.Get("summary"));
                 break;
             case InstructionsEvent instructions:
                 instructions.OverridePrompt = JsStringOrNull(value.Get("overridePrompt"));
