@@ -38,8 +38,12 @@ public sealed class ConversationRecord
     public string? ProviderId { get; set; }
     public string? ModelId { get; set; }
     public List<ConversationMessage> Messages { get; set; }
+    public ConversationCompaction? Compaction { get; set; }  // 上下文压缩状态
 }
 ```
+
+`Compaction` 记录摘要覆盖了多少条消息；消息本体完整保留，只在发送请求时折叠。
+细节见 [`COMPACTION.md`](COMPACTION.md)。
 
 `ConversationRecord.CreateFork()` 生成新 id、新时间戳、`ParentId = 原 id` 的深拷贝，原记录完全不变。
 

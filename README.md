@@ -327,7 +327,15 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 
 存储层 `AiTools.Core.Sessions` 与 UI 无关，控制台/Web/服务端亦可直接使用。详见 [`docs/SESSIONS.md`](docs/SESSIONS.md)。
 
-## Skills（Agent Skills）技能是"文件夹 + `SKILL.md`"组成的知识包，通过**渐进式披露**交给模型：系统提示只放名称与描述，模型需要时调用 `load_skill` 加载完整指令，用 `read_skill_file` 读取随包资源。与厂商无关，OpenAI / Anthropic / Gemini 通用。
+### 上下文压缩
+
+估算 token 达到模型上下文窗口的 **90%** 时自动把早期对话压成摘要（滚动合并、保留最近 2 轮原文），
+也支持 `/compact` 手动压缩与超限自动重试。窗口按模型 id 内置表推断，可在 `settings.json`
+按模型覆盖（`contextWindow`）。详见 [`docs/COMPACTION.md`](docs/COMPACTION.md)。
+
+## Skills（Agent Skills）
+
+技能是"文件夹 + `SKILL.md`"组成的知识包，通过**渐进式披露**交给模型：系统提示只放名称与描述，模型需要时调用 `load_skill` 加载完整指令，用 `read_skill_file` 读取随包资源。与厂商无关，OpenAI / Anthropic / Gemini 通用。
 
 ```csharp
 using AiTools.Skills;
@@ -573,6 +581,7 @@ docs/
   EXTENSIONS.md           扩展运行时、/goal、/plan 与插件指南
   EXTENSIONS_AUTHORING.md 扩展包编写指南（C#/JS/TS、构建、热重载、发布、调试）
   SESSIONS.md             会话恢复与分叉指南
+  COMPACTION.md           上下文压缩（自动摘要）指南
   MCP_AGENT_MANAGER.md    多 agent MCP 管理器说明
   TERMINAL.md             官方终端 Agent（全屏 TUI）指南
 ```

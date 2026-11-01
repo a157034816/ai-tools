@@ -670,8 +670,8 @@ var trust = ProjectTrust.Evaluate(cwd, trustedRoots, requireTrust);
 | `Notification` | `IExtensionUi.Notify`（不是事件；扩展直接调用） |
 | `Stop` / `StopFailure` | `AgentEnd` / `AgentFailed` |
 | `SubagentStart` / `SubagentStop` | **未实现**：本项目没有子代理运行时 |
-| `PreCompact` / `PostCompact` | **未实现**：本项目没有上下文压缩 |
+| `PreCompact` / `PostCompact` | `PreCompact`（可取消或直接提供摘要）/ `PostCompact`，另加 `CompactFailed` |
 | `InstructionsLoaded` | `InstructionsLoaded`（按来源分条，可禁用/改写） |
 | `ConfigChange` / `InstructionsLoaded` 之外的加载类 hook | 未实现（设置变更有 `/reload`，但无事件） |
 | `TaskCreated` / `TaskCompleted` / `TeammateIdle` / `WorktreeCreate` / `WorktreeRemove` | 未实现（无任务队列、无多代理、无 worktree 编排） |
-| Codex `AgentStart` / `AgentEnd` / `TurnStart` / `ContextCompact` | `AgentStart` / `AgentEnd` / `TurnStart`；`ContextCompact` 未实现 |
+| Codex `AgentStart` / `AgentEnd` / `TurnStart` / `ContextCompact` | `AgentStart` / `AgentEnd` / `TurnStart` / `PreCompact` + `PostCompact` |

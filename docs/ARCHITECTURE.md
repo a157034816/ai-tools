@@ -68,6 +68,8 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 | `Sse/SseParser.cs` | 通用 SSE 解析（多行 data、注释、`[DONE]`、`event:`）与 NDJSON 解析 |
 | `Json/JsonHelpers.cs` | 容错读取 JSON 字段的静态辅助方法 |
 | `Chat/ChatStreamAccumulator.cs` | 将流式增量聚合为完整 `ChatResponse` |
+| `Chat/ContextCompaction.cs` | 上下文压缩：`TokenEstimator`（粗估）、`ContextWindows`（模型窗口表）、`CompactionPlanner`（阈值/目标/保底轮次）、`CompactionView`（消息折叠）、`ContextCompactionService`（编排 + 回调）与默认摘要器 |
+| `Sessions/ConversationCompaction.cs` | 压缩状态的持久化模型（摘要 + 覆盖消息数），随 `ConversationRecord` 保存 |
 | `AiToolsPaths.cs` | 用户级数据根 `~/.ai-tools`：设置、会话、技能、扩展的唯一路径来源 |
 
 ### Provider 约定
