@@ -44,6 +44,28 @@ public class OpenAiOptions : AiHttpOptions
     public bool IncludeStreamUsage { get; init; } = true;
 
     /// <summary>
+    /// 提示缓存的稳定路由键，对应请求体的 <c>prompt_cache_key</c>。为 null 时不下发。
+    /// </summary>
+    /// <remarks>
+    /// OpenAI 的前缀缓存本身是自动的，但路由到哪个后端由服务端决定。多个会话共享同一段
+    /// 稳定前缀（同一系统提示、同一批租户）时，给它们相同的键可以显著提高命中率；
+    /// 不同前缀共用同一个键则会互相挤占缓存。留空表示交由服务端自行决定。
+    /// 仅 OpenAI 官方端点支持该字段，兼容端点可能拒绝，因此默认不下发。
+    /// </remarks>
+    public string? PromptCacheKey { get; init; }
+
+    /// <summary>
+    /// 提示缓存的保留策略，对应请求体的 <c>prompt_cache_retention</c>。
+    /// 可选 <c>in_memory</c>（默认）与 <c>24h</c>；为 null 时不下发。
+    /// </summary>
+    /// <remarks>
+    /// <c>24h</c> 会显著提高写入价并需要相应的账户权限，仅当对话间隔超过数分钟、
+    /// 且前缀足够大时才划算。它与本项目的缓存预热相互独立：预热只负责在缓存过期前刷新，
+    /// 而该参数决定服务端愿意把条目保留多久。
+    /// </remarks>
+    public string? PromptCacheRetention { get; init; }
+
+    /// <summary>
     /// 为 OpenAI 兼容端点创建选项。
     /// </summary>
     /// <param name="baseUrl">

@@ -16,10 +16,12 @@ public sealed class ChatStreamAccumulator
     private readonly System.Text.StringBuilder _text = new();
     private readonly System.Text.StringBuilder _reasoning = new();
     private readonly System.Collections.Generic.SortedDictionary<int, ToolEntry> _tools = new();
+    private readonly System.Collections.Generic.SortedDictionary<int, ThinkingEntry> _thinking = new();
     private ChatFinishReason _finishReason = ChatFinishReason.None;
     private Usage? _usage;
     private string? _id;
     private string? _model;
+    private int? _currentThinkingIndex;
 
     /// <summary>添加一个增量事件。</summary>
     public void Add(ChatStreamUpdate update)
@@ -27,6 +29,11 @@ public sealed class ChatStreamAccumulator
         if (update == null)
         {
             throw new ArgumentNullException(nameof(update));
+        }
+
+        if (update.ContentBlockIndex.HasValue)
+        {
+            BeginBlock(update);
         }
 
         if (update.TextDelta != null)
@@ -37,6 +44,15 @@ public sealed class ChatStreamAccumulator
         if (update.ReasoningDelta != null)
         {
             _reasoning.Append(update.ReasoningDelta);
+            if (_currentThinkingIndex.HasValue)
+            {
+                _thinking[_currentThinkingIndex.Value].Text.Append(update.ReasoningDelta);
+            }
+        }
+
+        if (update.ThinkingSignatureDelta != null && _currentThinkingIndex.HasValue)
+        {
+            _thinking[_currentThinkingIndex.Value].Signature.Append(update.ThinkingSignatureDelta);
         }
 
         if (update.ToolCallDelta != null)
@@ -75,6 +91,7 @@ public sealed class ChatStreamAccumulator
     public ChatResponse Build()
     {
         var parts = new System.Collections.Generic.List<ContentPart>();
+        parts.AddRange(BuildThinkingParts());
         if (_text.Length > 0)
         {
             parts.Add(ContentPart.FromText(_text.ToString()));
@@ -95,6 +112,55 @@ public sealed class ChatStreamAccumulator
             FinishReason = _finishReason,
             Usage = _usage
         };
+    }
+
+    /// <summary>记录内容块开始，用于把后续增量归到正确的块上。</summary>
+    private void BeginBlock(ChatStreamUpdate update)
+    {
+        var index = update.ContentBlockIndex!.Value;
+        var type = update.ContentBlockType;
+
+        if (string.Equals(type, "thinking", StringComparison.Ordinal))
+        {
+            _currentThinkingIndex = index;
+            _thinking[index] = new ThinkingEntry();
+        }
+        else if (string.Equals(type, "redacted_thinking", StringComparison.Ordinal))
+        {
+            _currentThinkingIndex = null;
+            _thinking[index] = new ThinkingEntry { RedactedData = update.RedactedThinkingData };
+        }
+        else
+        {
+            // text、tool_use 等块不属于推理，后续增量不应再计入上一个思考块。
+            _currentThinkingIndex = null;
+        }
+    }
+
+    private System.Collections.Generic.IReadOnlyList<ContentPart> BuildThinkingParts()
+    {
+        if (_thinking.Count == 0)
+        {
+            return Array.Empty<ContentPart>();
+        }
+
+        var parts = new System.Collections.Generic.List<ContentPart>(_thinking.Count);
+        foreach (var pair in _thinking)
+        {
+            var entry = pair.Value;
+            if (entry.RedactedData != null)
+            {
+                parts.Add(ContentPart.FromRedactedThinking(entry.RedactedData));
+            }
+            else
+            {
+                parts.Add(ContentPart.FromThinking(
+                    entry.Text.ToString(),
+                    entry.Signature.Length > 0 ? entry.Signature.ToString() : null));
+            }
+        }
+
+        return parts;
     }
 
     private void AddToolDelta(ToolCallDelta delta)
@@ -146,5 +212,14 @@ public sealed class ChatStreamAccumulator
         public string? Id;
         public string? Name;
         public System.Text.StringBuilder Arguments { get; } = new System.Text.StringBuilder();
+    }
+
+    private sealed class ThinkingEntry
+    {
+        public System.Text.StringBuilder Text { get; } = new System.Text.StringBuilder();
+
+        public System.Text.StringBuilder Signature { get; } = new System.Text.StringBuilder();
+
+        public string? RedactedData { get; init; }
     }
 }

@@ -335,6 +335,18 @@ public sealed class OpenAiChatClient : IChatClient
             body["response_format"] = MapResponseFormat(request.ResponseFormat);
         }
 
+        // 提示缓存的两项可选调优：路由键决定命中率，保留策略决定寿命。
+        // 只配置了才下发，避免兼容端点因未知字段拒绝请求。
+        if (!string.IsNullOrEmpty(_options.PromptCacheKey))
+        {
+            body["prompt_cache_key"] = _options.PromptCacheKey;
+        }
+
+        if (!string.IsNullOrEmpty(_options.PromptCacheRetention))
+        {
+            body["prompt_cache_retention"] = _options.PromptCacheRetention;
+        }
+
         return OpenAiHelpers.MergeAdditionalParameters(body, additional);
     }
 
@@ -419,30 +431,38 @@ public sealed class OpenAiChatClient : IChatClient
 
     private static object? BuildContent(IReadOnlyList<ContentPart> parts, string providerName)
     {
+        // 推理块（Anthropic 专有）不参与 OpenAI 请求：先剔除再判断是否只有文本。
+        var usable = new List<ContentPart>(parts.Count);
         var hasNonText = false;
         foreach (var part in parts)
         {
+            if (part is ThinkingPart || part is RedactedThinkingPart)
+            {
+                continue;
+            }
+
             if (!(part is TextPart))
             {
                 hasNonText = true;
-                break;
             }
+
+            usable.Add(part);
         }
 
         if (!hasNonText)
         {
-            if (parts.Count == 0)
+            if (usable.Count == 0)
             {
                 return null;
             }
 
-            if (parts.Count == 1 && parts[0] is TextPart single)
+            if (usable.Count == 1 && usable[0] is TextPart single)
             {
                 return single.Text;
             }
 
             var builder = new StringBuilder();
-            foreach (var part in parts)
+            foreach (var part in usable)
             {
                 if (part is TextPart text)
                 {
@@ -453,16 +473,20 @@ public sealed class OpenAiChatClient : IChatClient
             return builder.ToString();
         }
 
-        var content = new List<object>(parts.Count);
-        foreach (var part in parts)
+        var content = new List<object>(usable.Count);
+        foreach (var part in usable)
         {
-            content.Add(BuildContentPart(part, providerName));
+            var built = BuildContentPart(part, providerName);
+            if (built != null)
+            {
+                content.Add(built);
+            }
         }
 
         return content;
     }
 
-    private static object BuildContentPart(ContentPart part, string providerName)
+    private static object? BuildContentPart(ContentPart part, string providerName)
     {
         switch (part)
         {
@@ -493,6 +517,11 @@ public sealed class OpenAiChatClient : IChatClient
                     providerName);
             case AudioPart audio:
                 return BuildAudioPart(audio.Source, providerName);
+            case ThinkingPart _:
+            case RedactedThinkingPart _:
+                // 推理块是 Anthropic 专有的回传格式，OpenAI 兼容端点不认识它们。
+                // 直接丢弃，避免把一个 Anthropic 会话的历史转向 OpenAI 时报错。
+                return null;
             default:
                 throw new AiInvalidRequestException(
                     $"Unsupported content part type '{part.GetType().Name}'.",

@@ -31,9 +31,12 @@ public class AnthropicOptions : AiHttpOptions
     public string? AnthropicVersion { get; init; } = "2023-06-01";
 
     /// <summary>
-    /// <c>anthropic-beta</c> 标头的可选值，例如
-    /// <c>interleaved-thinking-2025-05-14</c> 或 <c>prompt-caching-2024-07-31</c>。
+    /// <c>anthropic-beta</c> 标头的可选值，例如 <c>interleaved-thinking-2025-05-14</c>。
     /// </summary>
+    /// <remarks>
+    /// 提示缓存已 GA，不再需要 <c>prompt-caching-*</c> 标头；1 小时保留由
+    /// <see cref="PromptCaching"/> 自动补上 <c>extended-cache-ttl-2025-04-11</c>。
+    /// </remarks>
     public string? Beta { get; init; }
 
     /// <summary>

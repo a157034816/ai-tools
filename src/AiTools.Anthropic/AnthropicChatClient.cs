@@ -208,19 +208,44 @@ public sealed class AnthropicChatClient : IChatClient
                     break;
 
                 case "content_block_start":
-                    if (JsonHelpers.GetObject(root, "content_block") is { } block &&
-                        string.Equals(JsonHelpers.GetString(block, "type"), "tool_use", StringComparison.Ordinal))
+                    if (JsonHelpers.GetObject(root, "content_block") is { } block)
                     {
-                        yield return new ChatStreamUpdate
+                        var blockIndex = JsonHelpers.GetInt32(root, "index") ?? 0;
+                        var blockType = JsonHelpers.GetString(block, "type");
+
+                        if (string.Equals(blockType, "tool_use", StringComparison.Ordinal))
                         {
-                            ToolCallDelta = new ToolCallDelta
+                            yield return new ChatStreamUpdate
                             {
-                                Index = JsonHelpers.GetInt32(root, "index") ?? 0,
-                                Id = JsonHelpers.GetString(block, "id"),
-                                Name = JsonHelpers.GetString(block, "name"),
-                                ArgumentsDelta = null
-                            }
-                        };
+                                ToolCallDelta = new ToolCallDelta
+                                {
+                                    Index = blockIndex,
+                                    Id = JsonHelpers.GetString(block, "id"),
+                                    Name = JsonHelpers.GetString(block, "name"),
+                                    ArgumentsDelta = null
+                                }
+                            };
+                        }
+                        else if (string.Equals(blockType, "thinking", StringComparison.Ordinal))
+                        {
+                            // 起始事件宣告块类型与序号，便于聚合器按顺序还原。
+                            yield return new ChatStreamUpdate
+                            {
+                                ContentBlockIndex = blockIndex,
+                                ContentBlockType = blockType,
+                                RedactedThinkingData = null
+                            };
+                        }
+                        else if (string.Equals(blockType, "redacted_thinking", StringComparison.Ordinal))
+                        {
+                            var data = JsonHelpers.GetString(block, "data");
+                            yield return new ChatStreamUpdate
+                            {
+                                ContentBlockIndex = blockIndex,
+                                ContentBlockType = blockType,
+                                RedactedThinkingData = data
+                            };
+                        }
                     }
 
                     break;
@@ -260,8 +285,15 @@ public sealed class AnthropicChatClient : IChatClient
                                 yield return new ChatStreamUpdate { ReasoningDelta = thinking };
                             }
                         }
-
-                        // "signature_delta" 及未知的 delta 类型会被忽略。
+                        else if (string.Equals(deltaType, "signature_delta", StringComparison.Ordinal))
+                        {
+                            // 签名必须逐段累积后原样回传，丢弃会导致后续请求被拒绝。
+                            var signature = JsonHelpers.GetString(delta, "signature");
+                            if (signature != null)
+                            {
+                                yield return new ChatStreamUpdate { ThinkingSignatureDelta = signature };
+                            }
+                        }
                     }
 
                     break;
@@ -653,14 +685,25 @@ public sealed class AnthropicChatClient : IChatClient
 
     private static void AddAssistantContent(List<JsonElement> blocks, ChatMessage message)
     {
+        // 顺序必须与响应一致：thinking → redacted_thinking → text → tool_use。
+        // 调换顺序会让签名校验失败，并使提示缓存的前缀失配。
+        var texts = new List<JsonElement>();
         foreach (var part in message.Content)
         {
             switch (part)
             {
+                case ThinkingPart thinking:
+                    blocks.Add(CreateThinkingBlock(thinking));
+                    break;
+
+                case RedactedThinkingPart redacted:
+                    blocks.Add(CreateRedactedThinkingBlock(redacted));
+                    break;
+
                 case TextPart text:
                     if (text.Text.Length > 0)
                     {
-                        blocks.Add(CreateTextBlock(text.Text));
+                        texts.Add(CreateTextBlock(text.Text));
                     }
 
                     break;
@@ -669,16 +712,40 @@ public sealed class AnthropicChatClient : IChatClient
                 case FilePart _:
                 case AudioPart _:
                     throw new AiInvalidRequestException(
-                        "Anthropic assistant messages may only contain text and tool calls.",
+                        "Anthropic assistant messages may only contain text, thinking and tool calls.",
                         Provider);
             }
         }
+
+        blocks.AddRange(texts);
 
         foreach (var call in message.ToolCalls)
         {
             blocks.Add(CreateToolUseBlock(call));
         }
     }
+
+    private static JsonElement CreateThinkingBlock(ThinkingPart thinking) => CreateElement(writer =>
+    {
+        writer.WriteStartObject();
+        writer.WriteString("type", "thinking");
+        writer.WriteString("thinking", thinking.Text);
+        // 签名缺省的块（例如未经服务商签发）不能回传，API 会拒绝。
+        if (!string.IsNullOrEmpty(thinking.Signature))
+        {
+            writer.WriteString("signature", thinking.Signature);
+        }
+
+        writer.WriteEndObject();
+    });
+
+    private static JsonElement CreateRedactedThinkingBlock(RedactedThinkingPart redacted) => CreateElement(writer =>
+    {
+        writer.WriteStartObject();
+        writer.WriteString("type", "redacted_thinking");
+        writer.WriteString("data", redacted.Data);
+        writer.WriteEndObject();
+    });
 
     private static JsonElement CreateTextBlock(string text) => CreateElement(writer =>
     {
@@ -963,7 +1030,9 @@ public sealed class AnthropicChatClient : IChatClient
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
 
+        var parts = new List<ContentPart>();
         var textBlocks = new List<string>();
+        var thinkingParts = new List<ContentPart>();
         var toolCalls = new List<ToolCall>();
 
         if (JsonHelpers.GetArray(root, "content") is { } content)
@@ -984,6 +1053,21 @@ public sealed class AnthropicChatClient : IChatClient
                         textBlocks.Add(text!);
                     }
                 }
+                else if (string.Equals(type, "thinking", StringComparison.Ordinal))
+                {
+                    // 必须原样回传：去掉签名或改写文本会让 API 拒绝后续请求。
+                    thinkingParts.Add(ContentPart.FromThinking(
+                        JsonHelpers.GetString(block, "thinking") ?? string.Empty,
+                        JsonHelpers.GetString(block, "signature")));
+                }
+                else if (string.Equals(type, "redacted_thinking", StringComparison.Ordinal))
+                {
+                    var data = JsonHelpers.GetString(block, "data");
+                    if (!string.IsNullOrEmpty(data))
+                    {
+                        thinkingParts.Add(ContentPart.FromRedactedThinking(data!));
+                    }
+                }
                 else if (string.Equals(type, "tool_use", StringComparison.Ordinal))
                 {
                     var arguments = "{}";
@@ -1001,11 +1085,12 @@ public sealed class AnthropicChatClient : IChatClient
                     });
                 }
 
-                // "thinking"、"redacted_thinking" 及未知块仅保留在 RawJson 中。
+                // 未知块类型仍只保留在 RawJson 中。
             }
         }
 
-        var parts = new List<ContentPart>();
+        // 顺序与响应一致，回传时才不会被服务端拒绝。
+        parts.AddRange(thinkingParts);
         if (textBlocks.Count > 0)
         {
             parts.Add(ContentPart.FromText(string.Join("\n\n", textBlocks)));

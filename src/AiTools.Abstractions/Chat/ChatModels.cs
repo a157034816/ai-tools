@@ -43,6 +43,43 @@ public abstract class ContentPart
 
     /// <summary>创建内联字节的音频片段。</summary>
     public static AudioPart FromAudioBytes(byte[] data, string mediaType) => new(BinarySource.FromBytes(data, mediaType));
+
+    /// <summary>创建服务商返回的推理片段（Anthropic 的 <c>thinking</c> 块）。</summary>
+    public static ThinkingPart FromThinking(string text, string? signature) => new(text, signature);
+
+    /// <summary>创建服务商已加密的推理片段（Anthropic 的 <c>redacted_thinking</c> 块）。</summary>
+    public static RedactedThinkingPart FromRedactedThinking(string data) => new(data);
+}
+
+/// <summary>
+/// 推理内容片段。Anthropic 要求在同一模型的后续请求中原样回传，
+/// 否则会破坏 thinking 签名校验，并使提示缓存的前缀失效。
+/// </summary>
+public sealed class ThinkingPart : ContentPart
+{
+    internal ThinkingPart(string text, string? signature)
+    {
+        Text = text ?? throw new ArgumentNullException(nameof(text));
+        Signature = signature;
+    }
+
+    /// <summary>推理文本。部分模型（如 Opus 5）默认返回空串。</summary>
+    public string Text { get; }
+
+    /// <summary>服务商签发的签名，必须原样回传，不可改写。</summary>
+    public string? Signature { get; }
+}
+
+/// <summary>已加密的推理片段，内容不透明，只能原样回传。</summary>
+public sealed class RedactedThinkingPart : ContentPart
+{
+    internal RedactedThinkingPart(string data)
+    {
+        Data = data ?? throw new ArgumentNullException(nameof(data));
+    }
+
+    /// <summary>服务商提供的加密数据，必须原样回传。</summary>
+    public string Data { get; }
 }
 
 /// <summary>文本内容片段。</summary>
@@ -510,6 +547,21 @@ public sealed class ChatStreamUpdate
 
     /// <summary>推理/思考过程的增量文本（如 DeepSeek reasoning、Claude thinking）。</summary>
     public string? ReasoningDelta { get; init; }
+
+    /// <summary>
+    /// 内容块开始：块在响应中的序号。仅 Anthropic 等按块组织的服务商会填充，
+    /// 用于把思考块与签名按原顺序还原，供后续请求原样回传。
+    /// </summary>
+    public int? ContentBlockIndex { get; init; }
+
+    /// <summary>内容块开始：块类型，例如 <c>thinking</c>、<c>redacted_thinking</c>、<c>text</c>。</summary>
+    public string? ContentBlockType { get; init; }
+
+    /// <summary>思考块签名增量（Anthropic 的 <c>signature_delta</c>），必须原样累积后回传。</summary>
+    public string? ThinkingSignatureDelta { get; init; }
+
+    /// <summary>已加密思考块的密文（Anthropic 的 <c>redacted_thinking</c>），必须原样回传。</summary>
+    public string? RedactedThinkingData { get; init; }
 
     /// <summary>工具调用的增量片段。</summary>
     public ToolCallDelta? ToolCallDelta { get; init; }

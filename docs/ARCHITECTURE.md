@@ -70,7 +70,7 @@ AiTools.OpenAI  AiTools.Anthropic  AiTools.Gemini  AiTools.Mcp
 | `Chat/ChatStreamAccumulator.cs` | 将流式增量聚合为完整 `ChatResponse` |
 | `Chat/ContextCompaction.cs` | 上下文压缩：`TokenEstimator`（粗估）、`ContextWindows`（模型窗口表）、`CompactionPlanner`（阈值/目标/保底轮次）、`CompactionView`（消息折叠）、`ContextCompactionService`（编排 + 回调）与默认摘要器 |
 | `Chat/PromptCachePolicy.cs` | 三协议的提示缓存策略表：`PromptCacheKind`（显式/隐式）、缓存寿命与内置单价，按模型前缀匹配 |
-| `Chat/PromptCacheWarmer.cs` | 预热器：按缓存寿命的 90% 重放请求（输出压到 1 token）保活缓存；三模式（`Off`/`Streaming`/`Idle`）+ 经济性阈值 |
+| `Chat/PromptCacheWarmer.cs` | 预热器：按缓存寿命的 90% 重放请求（Anthropic 压到 0 输出 token，其他协议 1）保活缓存；低于最小可缓存长度时不预热；三模式（`Off`/`Streaming`/`Idle`）+ 经济性阈值 |
 | `Chat/PromptCacheAccounting.cs` | 统一口径解析提示 token 总数与缓存命中率（Anthropic 与 OpenAI/Gemini 计数方式不同） |
 | `Sessions/ConversationCompaction.cs` | 压缩状态的持久化模型（摘要 + 覆盖消息数），随 `ConversationRecord` 保存 |
 | `AiToolsPaths.cs` | 用户级数据根 `~/.ai-tools`：设置、会话、技能、扩展的唯一路径来源 |

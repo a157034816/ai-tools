@@ -75,6 +75,38 @@ public class PromptCacheTests
         Assert.Equal(PromptCachePolicyCatalog.GeminiImplicitLifetime, policy.Lifetime);
     }
 
+    [Fact]
+    public void Resolve_AnthropicLongRetention_UsesOneHourLifetime()
+    {
+        var shortLived = PromptCachePolicyCatalog.Resolve("anthropic", "claude-sonnet-4-5");
+        var longLived = PromptCachePolicyCatalog.Resolve("anthropic", "claude-sonnet-4-5", longRetention: true);
+
+        Assert.Equal(PromptCachePolicyCatalog.AnthropicShortLifetime, shortLived.Lifetime);
+        Assert.Equal(PromptCachePolicyCatalog.AnthropicLongLifetime, longLived.Lifetime);
+    }
+
+    [Fact]
+    public void Resolve_Anthropic_ExposesZeroWarmOutputTokensAndMinimum()
+    {
+        var policy = PromptCachePolicyCatalog.Resolve("anthropic", "claude-sonnet-4-5");
+
+        // 官方推荐的预热写法：max_tokens 为 0，不产生输出 token 计费。
+        Assert.Equal(0, policy.WarmOutputTokens);
+        Assert.Equal(PromptCachePolicyCatalog.AnthropicConservativeMinimumTokens, policy.MinimumCacheableTokens);
+    }
+
+    [Fact]
+    public void Resolve_OpenAiAndGemini_RequireAtLeastOneOutputToken()
+    {
+        var openAi = PromptCachePolicyCatalog.Resolve("openai", "gpt-4.1");
+        var gemini = PromptCachePolicyCatalog.Resolve("gemini", "gemini-2.5-pro");
+
+        Assert.Equal(1, openAi.WarmOutputTokens);
+        Assert.Equal(1, gemini.WarmOutputTokens);
+        Assert.Equal(PromptCachePolicyCatalog.OpenAiMinimumTokens, openAi.MinimumCacheableTokens);
+        Assert.Equal(PromptCachePolicyCatalog.GeminiMinimumTokens, gemini.MinimumCacheableTokens);
+    }
+
     [Theory]
     [InlineData("openai", "o1-mini")]
     [InlineData("openai", "some-unknown-model")]
@@ -227,12 +259,90 @@ public class PromptCacheTests
         await WaitForAsync(() => warmed.Count > 0).ConfigureAwait(true);
 
         var replay = Assert.Single(client.Completions);
-        // 重放必须把输出压到 1 个 token，其余字段与真实请求一致。
+        // 重放必须把输出压到最小，其余字段与真实请求一致。
         Assert.Equal(1, replay.MaxOutputTokens);
         Assert.Equal(request.Model, replay.Model);
         Assert.Equal(request.SystemPrompt, replay.SystemPrompt);
         Assert.Equal("hi", replay.Messages[0].GetText());
         Assert.Equal(1, warmed[0].RefreshCount);
+    }
+
+    [Fact]
+    public async Task Track_AnthropicPolicy_ReplaysWithZeroOutputTokensAndNoToolChoice()
+    {
+        var warmed = new List<CacheWarmingResult>();
+        using var warmer = new PromptCacheWarmer(
+            new PromptCacheWarmingOptions { MaxRefreshes = 1 },
+            delay: ImmediateDelay);
+        warmer.Warmed += warmed.Add;
+        var client = new RecordingChatClient();
+        warmer.OnRunStarted();
+
+        warmer.Track(new PromptCacheWarmRequest
+        {
+            Client = client,
+            Request = new ChatRequest
+            {
+                Model = "claude-opus-5",
+                SystemPrompt = "sys",
+                Messages = new[] { ChatMessage.User("hi") },
+                MaxOutputTokens = 64000,
+                ToolChoice = ToolChoice.Function("lookup"),
+                ResponseFormat = ResponseFormat.JsonSchema("s", "{\"type\":\"object\"}")
+            },
+            // Anthropic 策略：WarmOutputTokens = 0。
+            Policy = PromptCachePolicyCatalog.Resolve("anthropic", "claude-opus-5"),
+            PromptTokens = 200_000
+        }, () => true);
+
+        await WaitForAsync(() => warmed.Count > 0).ConfigureAwait(true);
+
+        var replay = Assert.Single(client.Completions);
+        // max_tokens: 0 与强制工具选择 / JSON Schema 组合会被 Anthropic 拒绝，因此必须清空。
+        Assert.Equal(0, replay.MaxOutputTokens);
+        Assert.Null(replay.ToolChoice);
+        Assert.Null(replay.ResponseFormat);
+    }
+
+    [Fact]
+    public async Task Track_BelowMinimumCacheableLength_StopsWithoutRefreshing()
+    {
+        var decisions = new List<CacheWarmingDecision>();
+        var options = new PromptCacheWarmingOptions { Mode = PromptCacheWarmingMode.Idle };
+        using var warmer = new PromptCacheWarmer(
+            options,
+            decision =>
+            {
+                decisions.Add(decision);
+                return Task.FromResult(decision.Action);
+            },
+            ImmediateDelay);
+        var client = new RecordingChatClient();
+        warmer.OnRunStarted();
+
+        warmer.Track(new PromptCacheWarmRequest
+        {
+            Client = client,
+            Request = Request(),
+            Policy = new PromptCachePolicy
+            {
+                Kind = PromptCacheKind.Explicit,
+                Lifetime = TimeSpan.FromMinutes(5),
+                Pricing = WarmablePolicy().Pricing,
+                // Haiku 4.5 级别的下限：提示远大于经济阈值但低于最小可缓存长度。
+                MinimumCacheableTokens = 4_096
+            },
+            PromptTokens = 2_000
+        }, () => true);
+
+        await WaitForAsync(() => decisions.Count > 0).ConfigureAwait(true);
+
+        Assert.Single(decisions);
+        Assert.True(decisions[0].BelowCacheableMinimum);
+        Assert.False(decisions[0].EconomicsAvailable);
+        Assert.Equal(CacheWarmingAction.Stop, decisions[0].Action);
+        Assert.Equal(4_096, decisions[0].MinimumCacheableTokens);
+        Assert.Empty(client.Completions);
     }
 
     [Fact]

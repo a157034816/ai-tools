@@ -16,7 +16,14 @@ public sealed class PromptCachePricing
     /// <summary>获取或设置命中缓存的输入 token 单价。</summary>
     public double CachedInputPerMillion { get; set; }
 
-    /// <summary>获取或设置写入缓存的输入 token 单价。</summary>
+    /// <summary>
+    /// 获取或设置写入缓存的输入 token 单价（仅供展示与外部评估）。
+    /// </summary>
+    /// <remarks>
+    /// 预热器的经济性估算<b>不使用</b>该值：预热重放的语义是"缓存读"，会续期已有条目而不是新建，
+    /// 因此 <c>warmCost</c> 只计 <see cref="CachedInputPerMillion"/> 加一个输出 token。
+    /// 真正付写入溢价的是<b>真实请求</b>首次写缓存那一次，那笔开销已经发生，预热无法挽回。
+    /// </remarks>
     public double CacheWritePerMillion { get; set; }
 
     /// <summary>获取或设置输出 token 单价。</summary>
@@ -55,6 +62,18 @@ public sealed class PromptCachePolicy
     /// <summary>获取可选的计费单价；null 时预热器无法估算收益。</summary>
     public PromptCachePricing? Pricing { get; init; }
 
+    /// <summary>
+    /// 获取可缓存的最小提示长度（token）。低于该值时服务端不会创建缓存条目，
+    /// 但也不会报错——预热只会白付一次请求。0 表示无已知下限。
+    /// </summary>
+    public int MinimumCacheableTokens { get; init; }
+
+    /// <summary>
+    /// 获取预热请求应使用的输出上限。Anthropic 支持 <c>max_tokens: 0</c>（零输出计费），
+    /// 其他服务商至少需要 1 个 token。
+    /// </summary>
+    public int WarmOutputTokens { get; init; } = 1;
+
     /// <summary>获取是否值得为它安排预热：需要寿命与可用单价。</summary>
     public bool IsWarmable => Kind != PromptCacheKind.None && Lifetime.HasValue && Lifetime.Value > TimeSpan.Zero;
 
@@ -67,22 +86,43 @@ public sealed class PromptCachePolicy
 /// </summary>
 /// <remarks>
 /// 这里的寿命是服务商的<b>默认</b>承诺值，用于决定多久刷新一次：
-/// Anthropic 的 5 分钟（短保留）、OpenAI 兼容端点的 5–10 分钟最佳努力（best-effort）、
-/// Gemini 的隐式缓存（约 3 小时）。服务商可能提前淘汰缓存，预热只是提高命中概率。
+/// Anthropic 的 5 分钟（短保留）与 1 小时（长保留）、OpenAI 兼容端点的 5–10 分钟最佳努力（best-effort）、
+/// Gemini 隐式缓存的保守估计（服务端决定实际 TTL）。服务商可能提前淘汰缓存，预热只是提高命中概率。
 /// </remarks>
 public static class PromptCachePolicyCatalog
 {
-    /// <summary>OpenAI 前缀缓存的典型寿命（服务端最佳努力，约 5–10 分钟）。</summary>
+    /// <summary>OpenAI 前缀缓存的典型寿命（服务端最佳努力，通常 5–10 分钟；无承诺值）。</summary>
     public static readonly TimeSpan OpenAIInteractiveLifetime = TimeSpan.FromMinutes(5);
 
-    /// <summary>Gemini 隐式缓存的寿命（官方文档为 3 小时，这里取保守值）。</summary>
-    public static readonly TimeSpan GeminiImplicitLifetime = TimeSpan.FromHours(3);
+    /// <summary>
+    /// Gemini 隐式缓存的寿命假设。官方不承诺隐式缓存的 TTL（由服务端决定并可能提前淘汰），
+    /// 因此取比常见观察值更短的 1 小时，宁可多刷新一次，也不要长期等待一个已经不存在的缓存。
+    /// </summary>
+    public static readonly TimeSpan GeminiImplicitLifetime = TimeSpan.FromHours(1);
 
     /// <summary>Anthropic 短保留（5 分钟）的默认寿命。</summary>
     public static readonly TimeSpan AnthropicShortLifetime = TimeSpan.FromMinutes(5);
 
     /// <summary>Anthropic 长保留（1 小时，需 <c>extended-cache-ttl</c> beta）的寿命。</summary>
     public static readonly TimeSpan AnthropicLongLifetime = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Anthropic 的最小可缓存长度（token）。官方文档给的是按模型分代的值，
+    /// 这里取各代中的<b>最大值 4096</b>（Opus 4.6/4.5、Haiku 4.5）作为保守下限：
+    /// 宁可少预热，也不要在没写进缓存的请求上白付费。
+    /// </summary>
+    /// <remarks>
+    /// 各代实际值：Opus 5 / Fable 5 / Mythos 5 = 512；Opus 4.8 / Sonnet 5 / Sonnet 4.6 /
+    /// Sonnet 4.5 / Opus 4.1 / Opus 4 = 1024；Opus 4.7 = 2048；Opus 4.6 / Opus 4.5 /
+    /// Haiku 4.5 = 4096。要按模型精调时覆盖此值即可。
+    /// </remarks>
+    public const int AnthropicConservativeMinimumTokens = 4096;
+
+    /// <summary>OpenAI 自动前缀缓存的最小长度（token）。</summary>
+    public const int OpenAiMinimumTokens = 1024;
+
+    /// <summary>Gemini 隐式缓存的最小长度（token）。</summary>
+    public const int GeminiMinimumTokens = 1024;
 
     private static readonly PromptCachePricing OpenAiPricing = new()
     {
@@ -113,8 +153,12 @@ public static class PromptCachePolicyCatalog
     /// </summary>
     /// <param name="protocol">协议标识（<c>openai</c> / <c>anthropic</c> / <c>gemini</c>），大小写不敏感。</param>
     /// <param name="modelId">模型标识，可带 <c>provider/</c> 或 <c>models/</c> 前缀。</param>
+    /// <param name="longRetention">
+    /// 是否请求了长保留。仅 Anthropic 受影响：开启后寿命为 1 小时，预热排程据此推后，
+    /// 否则会在缓存仍然有效时反复重写，白付写入溢价。
+    /// </param>
     /// <returns>该模型上的缓存策略；不支持时返回 <see cref="PromptCachePolicy.None"/>。</returns>
-    public static PromptCachePolicy Resolve(string? protocol, string? modelId)
+    public static PromptCachePolicy Resolve(string? protocol, string? modelId, bool longRetention = false)
     {
         var normalized = NormalizeProtocol(protocol);
         var model = NormalizeModelId(modelId);
@@ -137,8 +181,11 @@ public static class PromptCachePolicyCatalog
                 return new PromptCachePolicy
                 {
                     Kind = PromptCacheKind.Explicit,
-                    Lifetime = AnthropicShortLifetime,
-                    Pricing = AnthropicPricing
+                    Lifetime = longRetention ? AnthropicLongLifetime : AnthropicShortLifetime,
+                    Pricing = AnthropicPricing,
+                    MinimumCacheableTokens = AnthropicConservativeMinimumTokens,
+                    // 官方推荐的预热写法：max_tokens 为 0 时不产生输出 token 计费。
+                    WarmOutputTokens = 0
                 };
 
             case "gemini":
@@ -148,7 +195,8 @@ public static class PromptCachePolicyCatalog
                 {
                     Kind = PromptCacheKind.Implicit,
                     Lifetime = GeminiImplicitLifetime,
-                    Pricing = GeminiPricing
+                    Pricing = GeminiPricing,
+                    MinimumCacheableTokens = GeminiMinimumTokens
                 };
 
             default:
@@ -162,7 +210,8 @@ public static class PromptCachePolicyCatalog
                 {
                     Kind = PromptCacheKind.Implicit,
                     Lifetime = OpenAIInteractiveLifetime,
-                    Pricing = OpenAiPricing
+                    Pricing = OpenAiPricing,
+                    MinimumCacheableTokens = OpenAiMinimumTokens
                 };
         }
     }

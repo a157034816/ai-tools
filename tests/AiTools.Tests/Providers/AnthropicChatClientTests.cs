@@ -416,6 +416,140 @@ public class AnthropicChatClientTests
         Assert.False(messages[2].GetProperty("content")[0].TryGetProperty("cache_control", out _));
     }
 
+    // ------------------------------------------------------------------
+    // thinking 块回传
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task CompleteAsync_PreservesThinkingAndRedactedThinkingBlocks()
+    {
+        const string responseJson = """
+        {
+          "id": "m2",
+          "model": "claude-opus-5",
+          "content": [
+            {"type": "thinking", "thinking": "let me think", "signature": "sig-abc"},
+            {"type": "redacted_thinking", "data": "opaque-blob"},
+            {"type": "text", "text": "Answer"}
+          ],
+          "stop_reason": "end_turn",
+          "usage": {"input_tokens": 1, "output_tokens": 1}
+        }
+        """;
+
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(responseJson));
+        var client = new AnthropicChatClient(Options(), handler.CreateClient());
+
+        var response = await client.CompleteAsync(new ChatRequest
+        {
+            Model = "claude-opus-5",
+            Messages = new[] { ChatMessage.User("think") }
+        });
+
+        var thinking = Assert.Single(response.Message.Content.OfType<ThinkingPart>());
+        Assert.Equal("let me think", thinking.Text);
+        Assert.Equal("sig-abc", thinking.Signature);
+
+        var redacted = Assert.Single(response.Message.Content.OfType<RedactedThinkingPart>());
+        Assert.Equal("opaque-blob", redacted.Data);
+
+        // 正文仍然只取文本，推理不混入 GetText()。
+        Assert.Equal("Answer", response.GetText());
+    }
+
+    [Fact]
+    public async Task CompleteAsync_EchoesThinkingBlocksInOriginalOrder()
+    {
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleResponse));
+        var client = new AnthropicChatClient(Options(), handler.CreateClient());
+
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "claude-opus-5",
+            Messages = new[]
+            {
+                ChatMessage.User("think"),
+                new ChatMessage
+                {
+                    Role = ChatRole.Assistant,
+                    Content = new ContentPart[]
+                    {
+                        ContentPart.FromThinking("reasoning text", "sig-abc"),
+                        ContentPart.FromRedactedThinking("opaque-blob"),
+                        ContentPart.FromText("final answer")
+                    },
+                    ToolCalls = new[] { new ToolCall("toolu_1", "lookup", "{}") }
+                },
+                ChatMessage.ToolResult("toolu_1", "result")
+            }
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        var assistantContent = body.RootElement.GetProperty("messages")[1].GetProperty("content");
+
+        // 顺序必须与响应一致：thinking → redacted_thinking → text → tool_use。
+        Assert.Equal("thinking", assistantContent[0].GetProperty("type").GetString());
+        Assert.Equal("reasoning text", assistantContent[0].GetProperty("thinking").GetString());
+        Assert.Equal("sig-abc", assistantContent[0].GetProperty("signature").GetString());
+
+        Assert.Equal("redacted_thinking", assistantContent[1].GetProperty("type").GetString());
+        Assert.Equal("opaque-blob", assistantContent[1].GetProperty("data").GetString());
+
+        Assert.Equal("text", assistantContent[2].GetProperty("type").GetString());
+        Assert.Equal("final answer", assistantContent[2].GetProperty("text").GetString());
+
+        Assert.Equal("tool_use", assistantContent[3].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void StreamAsync_AccumulatesThinkingWithSignature()
+    {
+        const string sse = """
+        event: message_start
+        data: {"type":"message_start","message":{"id":"m3","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":0}}}
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step one"}}
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-part"}}
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"done"}}
+
+        event: message_delta
+        data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+        """;
+
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Sse(sse));
+        var client = new AnthropicChatClient(Options(), handler.CreateClient());
+
+        var accumulator = new AiTools.Core.Chat.ChatStreamAccumulator();
+        var updates = client.StreamAsync(new ChatRequest
+        {
+            Model = "claude-opus-5",
+            Messages = new[] { ChatMessage.User("think") }
+        }).ToBlockingEnumerable();
+
+        foreach (var update in updates)
+        {
+            accumulator.Add(update);
+        }
+
+        var message = accumulator.Build().Message;
+        var thinking = Assert.Single(message.Content.OfType<ThinkingPart>());
+        Assert.Equal("step one", thinking.Text);
+        Assert.Equal("sig-part", thinking.Signature);
+        Assert.Equal("done", message.GetText());
+    }
+
     private const string SimpleResponse = """
     {"id":"m1","model":"claude","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}
     """;

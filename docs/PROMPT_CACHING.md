@@ -5,11 +5,44 @@
 | 协议 | 缓存方式 | 客户端要做什么 |
 |---|---|---|
 | Anthropic | 显式标记：只缓存 `cache_control` 之前的前缀 | 写入 `cache_control`（已自动完成） |
-| OpenAI / 兼容端点 | 隐式前缀缓存：≥1024 token 的稳定前缀自动缓存 | 无（保持前缀稳定即可） |
+| OpenAI / 兼容端点 | 隐式前缀缓存：≥1024 token 的稳定前缀自动缓存 | 无（保持前缀稳定即可）；可选设置路由键与保留策略 |
 | Gemini | 隐式缓存：`generateContent` 自动缓存 | 无 |
 
 因此对 OpenAI 与 Gemini 来说，本项目的贡献集中在**预热**（让缓存不过期自毁）；
 对 Anthropic 还额外负责**写入标记**，否则缓存永远不会被创建。
+
+### OpenAI：两项可选的显式调优
+
+OpenAI 的前缀缓存是自动的，但有两项参数能显著改变命中率，默认不下发（兼容端点可能拒绝）：
+
+| 参数 | 配置项 | 作用 |
+|---|---|---|
+| `prompt_cache_key` | `OpenAiOptions.PromptCacheKey` | 稳定路由键。多个会话共享同一前缀时给相同的键，可让它们路由到同一后端并共享缓存；不同前缀共用同一个键则会互相挤占 |
+| `prompt_cache_retention` | `OpenAiOptions.PromptCacheRetention` | 保留策略，可选 `in_memory`（默认）与 `24h`。`24h` 写入价更高、需要账户权限，只在对话间隔超过数分钟且前缀足够大时划算 |
+
+```csharp
+var client = new OpenAiChatClient(new OpenAiOptions
+{
+    ApiKey = key,
+    PromptCacheKey = "support-bot:v3",        // 同一系统提示的会话共用
+    PromptCacheRetention = "24h"              // 长间隔对话
+});
+```
+
+这两个参数与本项目的预热机制相互独立：预热在过期前刷新条目，它们决定服务端愿意保留多久。
+
+## Anthropic：推理块必须原样回传
+
+使用 adaptive thinking 时，响应里的 `thinking` / `redacted_thinking` 块**必须**在同模型的后续请求中原样回传。
+丢掉它们不只是丢内容，还会破坏签名校验，并使提示缓存的前缀失配——每轮都全量重算。
+
+本项目把这两类块建模为 `ThinkingPart` / `RedactedThinkingPart`，在以下位置保持原样：
+
+- 非流式响应解析（`ParseResponse`）；
+- 流式聚合（`ChatStreamAccumulator` 按块序号还原文本与签名，`signature_delta` 不再被丢弃）；
+- 重建请求时按 `thinking → redacted_thinking → text → tool_use` 的原始顺序写回。
+
+转向 OpenAI / Gemini 时这些块会被跳过，因此同一份会话历史可以在协议之间切换。
 
 ## Anthropic：标记放在哪
 
@@ -48,7 +81,10 @@ var longLived = new AnthropicClient(new AnthropicOptions
 
 `UseLongRetention` 会让标记变成 `{"type":"ephemeral","ttl":"1h"}`，并自动补上
 `anthropic-beta: extended-cache-ttl-2025-04-11`（只在调用方没自己写时补）。
-长保留的写入单价更高（1h 写入约为短保留的 1.25–2 倍），适合长时间离开后仍希望第一次请求就命中。
+长保留的写入单价更高（1h 写入约为短保留的 2 倍，短保留约 1.25 倍），适合长时间离开后仍希望第一次请求就命中。
+
+预热排程会跟随该开关：开启长保留后寿命按 1 小时计算，否则预热器会在缓存仍然有效时
+反复重写条目，白付写入溢价。
 
 不设置 `PromptCaching` 时客户端**不发送任何** `cache_control`，行为与引入该机制之前完全一致。
 需要完全手写标记的调用方可以通过 `ChatRequest.AdditionalParameters` 或扩展的
@@ -61,12 +97,40 @@ Anthropic 限制单个请求最多 4 个缓存点。默认策略用 3 个（工�
 
 ## 预热：为什么要做，什么时候停
 
-缓存有寿命（Anthropic 短保留 5 分钟、长保留 1 小时；OpenAI 约 5–10 分钟；Gemini 约 3 小时）。
+缓存有寿命（Anthropic 短保留 5 分钟、长保留 1 小时；OpenAI 与 Gemini 只承诺"最佳努力"，实际寿命由服务端决定）。
 如果一次工具循环跑了 6 分钟才发下一次请求，Anthropic 的缓存已经过期，下一次请求要按**未命中**重新计费——
 写入费比读取费贵得多，这是 agent 场景里最容易被忽略的开销。
 
-预热器（`PromptCacheWarmer`）的做法与 Pi 一致：**在缓存过期前，把同一个请求重放一次，输出上限压到 1 个 token**。
-重放会写入与真实请求相同的缓存条目，代价接近一次缓存读。
+预热器（`PromptCacheWarmer`）的做法与 Pi 一致：**在缓存过期前，把同一个请求重放一次，输出上限压到最小**。
+重放会刷新与真实请求相同的缓存条目，代价接近一次缓存读。
+
+输出上限按协议取（`PromptCachePolicy.WarmOutputTokens`）：
+
+| 协议 | 输出上限 | 说明 |
+|---|---|---|
+| Anthropic | `max_tokens: 0` | 官方推荐的预热写法：不产生输出 token，意图明确 |
+| OpenAI / Gemini / 兼容端点 | `max_tokens: 1` | 这些端点要求至少 1 个 token |
+
+重放请求会清空 `ToolChoice` 与 `ResponseFormat`：强制工具选择和 JSON Schema 约束对"只写缓存"没有意义，
+而且 `max_tokens: 0` 与它们组合会被 Anthropic 直接拒绝。
+
+### 最小可缓存长度
+
+低于服务商的下限时，`cache_control` 不报错，只是**不会创建缓存条目**——此时预热纯属白付一次请求。
+预热器在估算阶段就拦住这种情况，并停止预热（`CacheWarmingDecision.BelowCacheableMinimum` 会说明原因）。
+
+Anthropic 的下限按模型分代且**不单调**：
+
+| 模型 | 最小可缓存长度 |
+|---|---|
+| Opus 5 / Fable 5 / Mythos 5 | 512 |
+| Opus 4.8 / Sonnet 5 / Sonnet 4.6 / Sonnet 4.5 | 1024 |
+| Opus 4.7 | 2048 |
+| Opus 4.6 / Opus 4.5 / Haiku 4.5 | 4096 |
+
+本项目取其中的最大值 **4096** 作为保守下限（`PromptCachePolicyCatalog.AnthropicConservativeMinimumTokens`）：
+宁可少预热，也不要为没写进缓存的请求付费。要按模型精调时覆盖该常量即可。
+OpenAI 与 Gemini 取 1024。
 
 ### 三种模式
 
@@ -131,6 +195,7 @@ new TerminalOptions
 | `/new`、`/clear`、`/resume`、`/fork` | 会话已切换，旧前缀不再使用 |
 | 切换模型 | 缓存键包含模型 |
 | 真实请求不再可缓存 | 前缀已改变（例如换了不可缓存的模型） |
+| 提示低于最小可缓存长度 | 服务端不会创建条目，刷新纯属浪费 |
 | 刷新请求失败 | 避免持续失败重试 |
 
 ### 可缓存的范围
@@ -155,7 +220,9 @@ new TerminalOptions
 | `Model` / `PromptTokens` | 模型与上一次真实请求的提示规模 |
 | `WarmCost` / `MissCost` / `ExpectedSavings` | 经济性估算（美元） |
 | `ContinuationProbability` | "下一次请求会在过期前到来"的概率 |
-| `EconomicsAvailable` | 单价或规模未知时为 false |
+| `EconomicsAvailable` | 单价或规模未知、或提示低于最小可缓存长度时为 false |
+| `BelowCacheableMinimum` | 提示是否低于该模型的最小可缓存长度 |
+| `MinimumCacheableTokens` | 该模型的最小可缓存长度（token） |
 | `Action` | `warm` / `stop`，处理器可改写 |
 
 ```csharp
@@ -203,8 +270,10 @@ api.On<CacheWarmingDecisionEvent>(ExtensionEvent.CacheWarmingDecision, (e, ctx, 
 
 ## 已知边界
 
-- **寿命是服务商的默认承诺**：OpenAI 与 Gemini 的前缀缓存是"best-effort"，服务端可能提前淘汰。
-  预热提高命中概率，但不能保证命中。
+- **寿命是服务商的默认承诺**：OpenAI 与 Gemini 的前缀缓存是"best-effort"，服务端可能提前淘汰，
+  官方也不承诺隐式缓存的 TTL。预热提高命中概率，但不能保证命中。
+- **最小可缓存长度是保守值**：Anthropic 各代下限从 512 到 4096 不等且不单调，本项目统一取 4096。
+  在 Opus 5 这类下限只有 512 的模型上，20K 以下的会话会被判为"不值得预热"，这是刻意的保守取舍。
 - **单价表是内置近似值**：按主流模型定价写成，与实际账单可能有偏差。
   它只用于判断"值不值得刷新"，不影响计费；单价更新后改 `PromptCachePolicyCatalog` 即可。
 - **重放请求不是免费的**：即使压到 1 个输出 token，缓存读仍按 token 计费。

@@ -15,7 +15,7 @@
 | 停止序列 | ✅ | ✅ | ✅ |
 | 最大输出 token | ✅ | ✅（未设置时默认 4096） | ✅ |
 | Token 用量统计 | ✅ | ✅（含缓存读写） | ✅（含思考 token） |
-| 提示缓存 | ✅ 自动前缀缓存（≥1024 token） | ✅ 显式 `cache_control`（工具/系统/末条消息，可 1h） | ✅ 隐式缓存 |
+| 提示缓存 | ✅ 自动前缀缓存（≥1024 token；可选 `prompt_cache_key` / `prompt_cache_retention`） | ✅ 显式 `cache_control`（工具/系统/末条消息，可 1h） | ✅ 隐式缓存 |
 | 缓存预热 | ✅ `PromptCacheWarmer`（轮内/空闲） | ✅ 同上 | ✅ 同上 |
 | 推理/思考增量 | ✅ DeepSeek `reasoning_content`、OpenRouter `reasoning` | ✅ `thinking_delta` | ✅ `thought` 部分 |
 | 原始响应 JSON | ✅ `RawJson` | ✅ | ✅ |

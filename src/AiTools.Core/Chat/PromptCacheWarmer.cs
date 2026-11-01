@@ -89,6 +89,12 @@ public sealed class CacheWarmingDecision
     /// <summary>获取经济性是否可估算：提示规模与单价都已知时为 true。</summary>
     public bool EconomicsAvailable { get; init; }
 
+    /// <summary>获取提示是否低于该模型的最小可缓存长度（此时刷新不会创建缓存条目）。</summary>
+    public bool BelowCacheableMinimum { get; init; }
+
+    /// <summary>获取该模型的最小可缓存长度（token）；0 表示无已知下限。</summary>
+    public int MinimumCacheableTokens { get; init; }
+
     /// <summary>获取或设置结论。扩展可改写为 <see cref="CacheWarmingAction.Stop"/> 或反向开启。</summary>
     public CacheWarmingAction Action { get; set; }
 }
@@ -437,7 +443,9 @@ public sealed class PromptCacheWarmer : IDisposable
                 var action = await ApplyDecisionAsync(tracked, decision).ConfigureAwait(false);
                 if (action == CacheWarmingAction.Stop)
                 {
-                    Stop(tracked, decision.EconomicsAvailable ? "预期收益低于阈值" : "缓存经济性不可估算");
+                    Stop(tracked, decision.BelowCacheableMinimum
+                        ? $"提示低于最小可缓存长度（{decision.MinimumCacheableTokens} tokens）"
+                        : decision.EconomicsAvailable ? "预期收益低于阈值" : "缓存经济性不可估算");
                     return;
                 }
 
@@ -459,7 +467,7 @@ public sealed class PromptCacheWarmer : IDisposable
                 try
                 {
                     var response = await tracked.Request.Client
-                        .CompleteAsync(BuildWarmRequest(tracked.Request.Request), token)
+                        .CompleteAsync(BuildWarmRequest(tracked.Request.Request, tracked.Request.Policy), token)
                         .ConfigureAwait(false);
                     usage = response.Usage;
                 }
@@ -636,7 +644,11 @@ public sealed class PromptCacheWarmer : IDisposable
         var promptTokens = Math.Max(0, tracked.Request.PromptTokens);
         var streaming = tracked.Phase == "streaming";
         var probability = streaming ? 1.0 : Clamp(_options.IdleContinuationProbability, 0, 1);
-        var economicsAvailable = pricing != null && pricing.IsUsable && promptTokens > 0;
+
+        // 低于最小可缓存长度时服务端根本不会创建条目，刷新纯属浪费。
+        var minimum = Math.Max(0, tracked.Request.Policy.MinimumCacheableTokens);
+        var belowMinimum = minimum > 0 && promptTokens < minimum;
+        var economicsAvailable = pricing != null && pricing.IsUsable && promptTokens > 0 && !belowMinimum;
 
         var warmCost = 0.0;
         var missCost = 0.0;
@@ -662,6 +674,8 @@ public sealed class PromptCacheWarmer : IDisposable
             ContinuationProbability = probability,
             ExpectedSavings = savings,
             EconomicsAvailable = economicsAvailable,
+            BelowCacheableMinimum = belowMinimum,
+            MinimumCacheableTokens = minimum,
             Action = action
         };
     }
@@ -707,20 +721,28 @@ public sealed class PromptCacheWarmer : IDisposable
         _lastOverride = tracked.ExtensionOverride;
     }
 
-    /// <summary>构造重放请求：除输出上限压到 1 个 token 外与真实请求完全一致。</summary>
-    private static ChatRequest BuildWarmRequest(ChatRequest request) => new()
+    /// <summary>
+    /// 构造重放请求：除输出上限外与真实请求完全一致。
+    /// 输出上限取策略给出的值（Anthropic 为 0，零输出计费；其他服务商为 1）。
+    /// </summary>
+    /// <remarks>
+    /// <c>ToolChoice</c> 与 <c>ResponseFormat</c> 会被清空：强制工具选择与 JSON Schema 约束
+    /// 在"只写缓存不产出内容"的重放里没有意义，而 <c>max_tokens: 0</c> 与它们组合会被
+    /// Anthropic 直接拒绝。参考 <c>PromptCachePolicy.WarmOutputTokens</c>。
+    /// </remarks>
+    private static ChatRequest BuildWarmRequest(ChatRequest request, PromptCachePolicy policy) => new()
     {
         Model = request.Model,
         SystemPrompt = request.SystemPrompt,
         Messages = request.Messages,
         Tools = request.Tools,
-        ToolChoice = request.ToolChoice,
+        ToolChoice = null,
         Temperature = request.Temperature,
         TopP = request.TopP,
         TopK = request.TopK,
-        MaxOutputTokens = 1,
+        MaxOutputTokens = Math.Max(0, policy.WarmOutputTokens),
         StopSequences = request.StopSequences,
-        ResponseFormat = request.ResponseFormat,
+        ResponseFormat = null,
         AdditionalParameters = request.AdditionalParameters
     };
 

@@ -1223,7 +1223,7 @@ public sealed class AgentSession : IAsyncDisposable
             {
                 if (!string.IsNullOrWhiteSpace(text))
                 {
-                    _history.Add(new TranscriptMessage(ChatMessage.Assistant(text)));
+                    _history.Add(new TranscriptMessage(BuildAssistantHistoryMessage(text, response.Message)));
                 }
             }
 
@@ -1443,6 +1443,28 @@ public sealed class AgentSession : IAsyncDisposable
             request,
             PromptCacheAccounting.GetPromptTokens(client.ProviderName, usage));
 
+    /// <summary>
+    /// 构造写入历史的助手消息：保留模型返回的推理块（Anthropic 要求同模型后续请求原样回传），
+    /// 正文以最终展示文本为准（扩展可能已改写）。
+    /// </summary>
+    private static ChatMessage BuildAssistantHistoryMessage(string text, ChatMessage? responseMessage)
+    {
+        var parts = new List<ContentPart>();
+        if (responseMessage != null)
+        {
+            foreach (var part in responseMessage.Content)
+            {
+                if (part is ThinkingPart or RedactedThinkingPart)
+                {
+                    parts.Add(part);
+                }
+            }
+        }
+
+        parts.Add(ContentPart.FromText(text));
+        return new ChatMessage { Role = ChatRole.Assistant, Content = parts };
+    }
+
     /// <summary>记录最近一次真实请求（已知提示规模）。</summary>
     private void TrackPromptCache(IChatClient client, ProviderConfig provider, ChatRequest request, int promptTokens)
     {
@@ -1452,7 +1474,10 @@ public sealed class AgentSession : IAsyncDisposable
         }
 
         var policy = _options.PromptCache.Enabled
-            ? PromptCachePolicyCatalog.Resolve(provider.Protocol, request.Model)
+            ? PromptCachePolicyCatalog.Resolve(
+                provider.Protocol,
+                request.Model,
+                _options.PromptCache.LongRetention)
             : PromptCachePolicy.None;
 
         _cacheWarmer.Track(

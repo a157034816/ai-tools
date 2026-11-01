@@ -1935,7 +1935,7 @@ public sealed class ChatViewModel : ObservableObject
 
             if (!string.IsNullOrWhiteSpace(historyText))
             {
-                _history.Add(new HistoryEntry(ChatMessage.Assistant(historyText)));
+                _history.Add(new HistoryEntry(BuildAssistantHistoryMessage(historyText, response.Message)));
             }
 
             OnUi(() =>
@@ -2327,6 +2327,28 @@ public sealed class ChatViewModel : ObservableObject
     /// 请求发出前先用估算的提示规模安排预热。真实用量只有响应回来才知道，
     /// 但轮内预热恰恰要在"等响应与跑工具"这段时间生效，所以先跑起来。
     /// </summary>
+    /// <summary>
+    /// 构造写入历史的助手消息：保留模型返回的推理块（Anthropic 要求同模型后续请求原样回传），
+    /// 正文以最终展示文本为准（扩展可能已改写）。
+    /// </summary>
+    private static ChatMessage BuildAssistantHistoryMessage(string text, ChatMessage? responseMessage)
+    {
+        var parts = new List<ContentPart>();
+        if (responseMessage != null)
+        {
+            foreach (var part in responseMessage.Content)
+            {
+                if (part is ThinkingPart or RedactedThinkingPart)
+                {
+                    parts.Add(part);
+                }
+            }
+        }
+
+        parts.Add(ContentPart.FromText(text));
+        return new ChatMessage { Role = ChatRole.Assistant, Content = parts };
+    }
+
     private void TrackPromptCacheBeforeRequest(
         AiTools.Abstractions.IChatClient client,
         ProviderConfig provider,
@@ -2374,7 +2396,10 @@ public sealed class ChatViewModel : ObservableObject
         }
 
         var policy = AiToolsWpf.Options.PromptCache.Enabled
-            ? AiTools.Core.Chat.PromptCachePolicyCatalog.Resolve(provider.Protocol, request.Model)
+            ? AiTools.Core.Chat.PromptCachePolicyCatalog.Resolve(
+                provider.Protocol,
+                request.Model,
+                AiToolsWpf.Options.PromptCache.LongRetention)
             : AiTools.Core.Chat.PromptCachePolicy.None;
 
         _cacheWarmer.Track(

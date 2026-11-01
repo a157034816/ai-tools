@@ -171,6 +171,89 @@ public class OpenAiChatClientTests
     }
 
     [Fact]
+    public async Task CompleteAsync_OmitsPromptCacheParametersWhenNotConfigured()
+    {
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleTextResponse));
+        var client = new OpenAiChatClient(Options(), handler.CreateClient());
+
+        await client.CompleteAsync(ChatRequest.FromUser("gpt-4.1", "hi"));
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        // 兼容端点可能不认识这两个字段，未配置时不下发。
+        Assert.False(body.RootElement.TryGetProperty("prompt_cache_key", out _));
+        Assert.False(body.RootElement.TryGetProperty("prompt_cache_retention", out _));
+    }
+
+    [Fact]
+    public async Task CompleteAsync_EmitsPromptCacheKeyAndRetentionWhenConfigured()
+    {
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleTextResponse));
+        var client = new OpenAiChatClient(
+            new OpenAiOptions
+            {
+                ApiKey = "k",
+                PromptCacheKey = "support-bot:v3",
+                PromptCacheRetention = "24h"
+            },
+            handler.CreateClient());
+
+        await client.CompleteAsync(ChatRequest.FromUser("gpt-4.1", "hi"));
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        Assert.Equal("support-bot:v3", body.RootElement.GetProperty("prompt_cache_key").GetString());
+        Assert.Equal("24h", body.RootElement.GetProperty("prompt_cache_retention").GetString());
+    }
+
+    [Fact]
+    public async Task CompleteAsync_AdditionalParametersOverridePromptCacheKey()
+    {
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleTextResponse));
+        var client = new OpenAiChatClient(
+            new OpenAiOptions { ApiKey = "k", PromptCacheKey = "from-options" },
+            handler.CreateClient());
+
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "gpt-4.1",
+            Messages = new[] { ChatMessage.User("hi") },
+            AdditionalParameters = JsonDocument.Parse("""{"prompt_cache_key":"from-request"}""").RootElement.Clone()
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        Assert.Equal("from-request", body.RootElement.GetProperty("prompt_cache_key").GetString());
+    }
+
+    [Fact]
+    public async Task CompleteAsync_DropsThinkingPartsInsteadOfFailing()
+    {
+        var handler = new ScriptedHttpHandler((_, _) => ScriptedHttpHandler.Json(SimpleTextResponse));
+        var client = new OpenAiChatClient(Options(), handler.CreateClient());
+
+        // 同一份会话历史从 Anthropic 转到 OpenAI 时不应报错。
+        await client.CompleteAsync(new ChatRequest
+        {
+            Model = "gpt-4.1",
+            Messages = new[]
+            {
+                ChatMessage.User("hi"),
+                new ChatMessage
+                {
+                    Role = ChatRole.Assistant,
+                    Content = new ContentPart[]
+                    {
+                        ContentPart.FromThinking("reasoning", "sig"),
+                        ContentPart.FromText("answer")
+                    }
+                }
+            }
+        });
+
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        var assistant = body.RootElement.GetProperty("messages")[1];
+        Assert.Equal("answer", assistant.GetProperty("content").GetString());
+    }
+
+    [Fact]
     public async Task CompleteAsync_ThrowsMappedExceptionOnHttpError()
     {
         var handler = new ScriptedHttpHandler((_, _) => new HttpResponseMessage(HttpStatusCode.TooManyRequests)

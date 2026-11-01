@@ -337,10 +337,11 @@ AiToolsWpf.Initialize(new AiToolsWpfOptions
 
 三个协议都支持服务商的提示缓存，但机制不同：Anthropic 需要显式 `cache_control`
 （已按 **工具 → 系统提示 → 末条消息** 自动放置，可选 1 小时长保留），
-OpenAI 与 Gemini 则是服务端自动前缀缓存。
+OpenAI 与 Gemini 则是服务端自动前缀缓存（OpenAI 可另设 `prompt_cache_key` / `prompt_cache_retention`）。
 
-在此之上，`PromptCacheWarmer` 会在缓存寿命的 90% 处重放一次请求（输出压到 1 token）
-把缓存保活，避免长时间工具循环后下次请求按未命中计费。默认只在轮内预热，
+在此之上，`PromptCacheWarmer` 会在缓存寿命的 90% 处重放一次请求把缓存保活，
+避免长时间工具循环后下次请求按未命中计费。Anthropic 用 `max_tokens: 0`（零输出计费），
+其他协议用 1；低于模型的最小可缓存长度时直接不预热。默认只在轮内预热，
 预期节省低于 **$0.05** 时不刷新；扩展可用 `CacheWarmingDecision` 事件改写结论。
 详见 [`docs/PROMPT_CACHING.md`](docs/PROMPT_CACHING.md)。
 
