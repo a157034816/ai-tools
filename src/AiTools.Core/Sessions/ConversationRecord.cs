@@ -105,6 +105,12 @@ public sealed class ConversationRecord
     /// </summary>
     public string? ExtensionState { get; set; }
 
+    /// <summary>
+    /// 获取或设置上下文压缩状态；尚未压缩过的会话为 null。
+    /// 消息列表保持完整（用于 /resume 与分叉），发送请求时按该状态折叠。
+    /// </summary>
+    public ConversationCompaction? Compaction { get; set; }
+
     /// <summary>创建供选择器使用的摘要。</summary>
     public ConversationSummary ToSummary() => new()
     {
@@ -134,6 +140,14 @@ public sealed class ConversationRecord
             ProviderId = ProviderId,
             ModelId = ModelId,
             ExtensionState = ExtensionState,
+            Compaction = Compaction == null ? null : new ConversationCompaction
+            {
+                Summary = Compaction.Summary,
+                CoveredMessageCount = Compaction.CoveredMessageCount,
+                CreatedAt = Compaction.CreatedAt,
+                OriginalTokenCount = Compaction.OriginalTokenCount,
+                CompactedTokenCount = Compaction.CompactedTokenCount
+            },
             Messages = Messages.ConvertAll(message => new ConversationMessage
             {
                 Role = message.Role,

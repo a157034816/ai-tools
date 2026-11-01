@@ -32,12 +32,19 @@ public sealed class ModelConfig
     /// <summary>是否在对话页的 model 选择器中提供。</summary>
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// 模型上下文窗口（token）。为 null 时按模型 id 推断（见 <c>ContextWindows</c>）。
+    /// 接入自建网关或新模型时用它覆盖推断值。
+    /// </summary>
+    public int? ContextWindow { get; set; }
+
     /// <summary>创建深拷贝。</summary>
     public ModelConfig Clone() => new()
     {
         Id = Id,
         DisplayName = DisplayName,
-        Enabled = Enabled
+        Enabled = Enabled,
+        ContextWindow = ContextWindow
     };
 
     /// <summary>获取用于在 UI 中显示的名称。</summary>
